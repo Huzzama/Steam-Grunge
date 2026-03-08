@@ -24,6 +24,18 @@ data/cache/
 data/presets/
 data/steam_path_override.json
 data/preferences.json
+data/api_key.json
+
+# ── Packaging build artifacts (keep scripts, ignore output files) ──────────────
+packaging/appimage/*.AppImage
+packaging/appimage/appimagetool.AppImage
+packaging/appimage/*.AppDir/
+packaging/debian/steam-grunge-editor_*/
+packaging/debian/*.deb
+packaging/arch/pkg/
+packaging/arch/src/
+packaging/arch/*.pkg.tar.zst
+packaging/arch/*.pkg.tar.xz
 
 # ── OS files ──────────────────────────────────────────────────────────────────
 .DS_Store
