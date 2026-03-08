@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Steam Grunge Editor
+GenericName=Steam Artwork Editor
+Comment=Create distressed grunge-style artwork for your Steam library
+Exec=steam-grunge-editor %F
+Icon=steam-grunge-editor
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=steam;artwork;grunge;vhs;editor;image;
+MimeType=image/png;image/jpeg;image/webp;
+StartupNotify=true
+StartupWMClass=SteamGrungeEditor
