@@ -1,0 +1,47 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environment ───────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Exports (user-generated artwork — not source code) ────────────────────────
+exports/
+
+# ── User data (cache, presets, preferences) ───────────────────────────────────
+data/cache/
+data/presets/
+data/steam_path_override.json
+data/preferences.json
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ── API keys / secrets ────────────────────────────────────────────────────────
+*.key
+secrets.json
+.env
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
