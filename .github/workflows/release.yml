@@ -9,9 +9,10 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux Packages
     runs-on: ubuntu-22.04
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -56,6 +57,124 @@ jobs:
             > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            packaging/appimage/Steam_Grunge_Editor-*.AppImage
+            packaging/debian/steam-grunge-editor_*.deb
+            SHA256SUMS.txt
+
+  # ── macOS ──────────────────────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS Package
+    runs-on: macos-13
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+      - name: Write VERSION file
+        run: echo "${{ env.VERSION }}" > VERSION
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+          brew install create-dmg
+
+      - name: Generate icon.icns
+        run: |
+          ICONSET="packaging/macos/icon.iconset"
+          mkdir -p "$ICONSET"
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size app/assets/icon.png \
+              --out "$ICONSET/icon_${size}x${size}.png"
+            sips -z $((size*2)) $((size*2)) app/assets/icon.png \
+              --out "$ICONSET/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns "$ICONSET" -o app/assets/icon.icns
+          rm -rf "$ICONSET"
+
+      - name: Build .app with PyInstaller
+        run: |
+          pyinstaller packaging/macos/steam_grunge_editor_mac.spec \
+            --distpath packaging/macos/dist \
+            --workpath packaging/macos/build \
+            --noconfirm
+
+      - name: Set version in Info.plist
+        run: |
+          /usr/libexec/PlistBuddy -c \
+            "Set :CFBundleVersion ${{ env.VERSION }}" \
+            "packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c \
+            "Set :CFBundleShortVersionString ${{ env.VERSION }}" \
+            "packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
+
+      - name: Create .dmg
+        run: |
+          create-dmg \
+            --volname "Steam Grunge Editor ${{ env.VERSION }}" \
+            --volicon "app/assets/icon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Steam Grunge Editor.app" 150 185 \
+            --hide-extension "Steam Grunge Editor.app" \
+            --app-drop-link 450 185 \
+            "packaging/macos/Steam_Grunge_Editor-${{ env.VERSION }}.dmg" \
+            "packaging/macos/dist/"
+
+      - name: Generate checksum
+        run: |
+          sha256sum \
+            "packaging/macos/Steam_Grunge_Editor-${{ env.VERSION }}.dmg" \
+            > SHA256SUMS-macos.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-package
+          path: |
+            packaging/macos/Steam_Grunge_Editor-*.dmg
+            SHA256SUMS-macos.txt
+
+  # ── GitHub Release ─────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Extract version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist/
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-package
+          path: dist/
+
+      - name: Merge checksums
+        run: |
+          cat dist/SHA256SUMS.txt dist/SHA256SUMS-macos.txt > dist/SHA256SUMS-all.txt
+          cat dist/SHA256SUMS-all.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -63,34 +182,50 @@ jobs:
           body: |
             ## Steam Grunge Editor v${{ env.VERSION }}
 
+            Create distressed, grunge-style custom artwork for your Steam library.
+
             ### Downloads
-            | File | For |
-            |------|-----|
-            | `Steam_Grunge_Editor-${{ env.VERSION }}-x86_64.AppImage` | Any Linux distro (universal) |
-            | `steam-grunge-editor_${{ env.VERSION }}_all.deb` | Ubuntu, Mint, Debian, Pop!_OS |
+
+            | File | Platform |
+            |------|----------|
+            | `Steam_Grunge_Editor-${{ env.VERSION }}-x86_64.AppImage` | 🐧 Any Linux distro (universal) |
+            | `steam-grunge-editor_${{ env.VERSION }}_all.deb` | 🐧 Ubuntu, Mint, Debian, Pop!_OS |
+            | `SteamGrungeEditor-${{ env.VERSION }}-Setup.exe` | 🪟 Windows 10/11 |
+            | `Steam_Grunge_Editor-${{ env.VERSION }}.dmg` | 🍎 macOS Big Sur 11.0+ |
 
             ### Install
-            **AppImage (any distro):**
+
+            **🐧 AppImage (any Linux distro):**
             ```bash
             chmod +x Steam_Grunge_Editor-${{ env.VERSION }}-x86_64.AppImage
             ./Steam_Grunge_Editor-${{ env.VERSION }}-x86_64.AppImage
             ```
-            **Debian / Ubuntu / Linux Mint:**
+
+            **🐧 Debian / Ubuntu / Linux Mint:**
             ```bash
             sudo dpkg -i steam-grunge-editor_${{ env.VERSION }}_all.deb
             sudo apt-get install -f
             ```
-            **Arch Linux (AUR):**
+
+            **🐧 Arch Linux (AUR):**
             ```bash
             yay -S steam-grunge-editor
             ```
 
+            **🪟 Windows:**
+            Run `SteamGrungeEditor-${{ env.VERSION }}-Setup.exe` and follow the installer.
+
+            **🍎 macOS:**
+            Open `Steam_Grunge_Editor-${{ env.VERSION }}.dmg`, drag to Applications.
+            First launch: right-click → Open (bypasses Gatekeeper warning).
+
             ### Verify checksums
             ```bash
-            sha256sum -c SHA256SUMS.txt
+            sha256sum -c SHA256SUMS-all.txt
             ```
           generate_release_notes: true
           files: |
-            packaging/appimage/Steam_Grunge_Editor-*.AppImage
-            packaging/debian/steam-grunge-editor_*.deb
-            SHA256SUMS.txt
+            dist/Steam_Grunge_Editor-*.AppImage
+            dist/steam-grunge-editor_*.deb
+            dist/Steam_Grunge_Editor-*.dmg
+            dist/SHA256SUMS-all.txt
