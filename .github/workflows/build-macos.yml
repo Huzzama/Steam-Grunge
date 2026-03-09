@@ -1,0 +1,83 @@
+name: Build macOS Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS .dmg
+    runs-on: macos-13
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Write VERSION file
+        run: echo "${GITHUB_REF#refs/tags/v}" > VERSION
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+          brew install create-dmg
+
+      - name: Generate icon.icns
+        run: |
+          ICONSET="packaging/macos/icon.iconset"
+          mkdir -p "$ICONSET"
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size app/assets/icon.png \
+              --out "$ICONSET/icon_${size}x${size}.png"
+            sips -z $((size*2)) $((size*2)) app/assets/icon.png \
+              --out "$ICONSET/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns "$ICONSET" -o app/assets/icon.icns
+          rm -rf "$ICONSET"
+
+      - name: Build .app with PyInstaller
+        run: |
+          pyinstaller packaging/macos/steam_grunge_editor_mac.spec \
+            --distpath packaging/macos/dist \
+            --workpath packaging/macos/build \
+            --noconfirm
+
+      - name: Set version in Info.plist
+        run: |
+          VER="${GITHUB_REF#refs/tags/v}"
+          /usr/libexec/PlistBuddy -c \
+            "Set :CFBundleVersion $VER" \
+            "packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c \
+            "Set :CFBundleShortVersionString $VER" \
+            "packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
+
+      - name: Create .dmg
+        run: |
+          VER="${GITHUB_REF#refs/tags/v}"
+          create-dmg \
+            --volname "Steam Grunge Editor $VER" \
+            --volicon "app/assets/icon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Steam Grunge Editor.app" 150 185 \
+            --hide-extension "Steam Grunge Editor.app" \
+            --app-drop-link 450 185 \
+            "packaging/macos/Steam_Grunge_Editor-${VER}.dmg" \
+            "packaging/macos/dist/"
+
+      - name: Upload .dmg to existing release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/macos/Steam_Grunge_Editor-*.dmg
