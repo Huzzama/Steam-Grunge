@@ -80,15 +80,15 @@ jobs:
             "packaging/macos/Steam_Grunge_Editor-${VER}.dmg" \
             "packaging/macos/dist/"
 
-      - name: Upload .dmg to existing release
-        uses: softprops/action-gh-release@v2
-        with:
-          fail_on_unmatched_files: false
-          files: packaging/macos/Steam_Grunge_Editor-*.dmg
-
-      - name: Retry upload if needed
-        if: failure()
-        uses: softprops/action-gh-release@v2
-        with:
-          fail_on_unmatched_files: false
-          files: packaging/macos/Steam_Grunge_Editor-*.dmg
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Wait for the release to exist (Linux job creates it)
+          for i in {1..10}; do
+            gh release view "$TAG" && break || sleep 15
+          done
+          gh release upload "$TAG" \
+            packaging/macos/Steam_Grunge_Editor-*.dmg \
+            --clobber
