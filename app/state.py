@@ -50,10 +50,13 @@ class AppState:
     # Composed output
     composed_image: Optional[Image.Image] = None
 
-    # Steam AppID cache — confirmed once per session per game
-    confirmed_app_id:   Optional[int] = None   # set after user confirms
-    confirmed_app_name: str = ""               # canonical name that was confirmed
-    # If confirmed_app_name != selected_game_name → cache is stale, re-confirm
+    # ── Export paths ───────────────────────────────────────────────────────────
+    # Tracks the most recently exported file per template key.
+    # Set by _export() in mainWindow so Sync always uses the exact
+    # file the user just exported, not some old file from the exports folder.
+    # e.g. {"cover": "/path/to/Helltaker_cover_20260309_130000.png",
+    #        "wide":  "/path/to/Helltaker_wide_20260309_130001.png"}
+    export_paths: Dict[str, str] = field(default_factory=dict)
 
     def reset_filters(self):
         self.film_grain = 20.0
