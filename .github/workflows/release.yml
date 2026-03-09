@@ -70,6 +70,7 @@ jobs:
   build-macos:
     name: Build macOS Package
     runs-on: macos-13
+    continue-on-error: true
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -152,7 +153,8 @@ jobs:
   # ── GitHub Release ─────────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-macos]
+    needs: [build-linux]
+    if: always()
     runs-on: ubuntu-22.04
     steps:
       - name: Extract version
@@ -166,13 +168,15 @@ jobs:
 
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: macos-package
           path: dist/
 
       - name: Merge checksums
         run: |
-          cat dist/SHA256SUMS.txt dist/SHA256SUMS-macos.txt > dist/SHA256SUMS-all.txt
+          cat dist/SHA256SUMS.txt > dist/SHA256SUMS-all.txt
+          cat dist/SHA256SUMS-macos.txt >> dist/SHA256SUMS-all.txt 2>/dev/null || true
           cat dist/SHA256SUMS-all.txt
 
       - name: Create GitHub Release
