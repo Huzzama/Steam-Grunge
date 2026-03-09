@@ -341,6 +341,10 @@ class SteamSyncDialog(QDialog):
         data = self._candidate_combo.itemData(idx)
         if data and isinstance(data, dict):
             self._appid_edit.setText(str(data["id"]))
+            # Update label to reflect the actually selected result (fixes stale label bug)
+            self._lookup_label.setText(
+                f"✔  Selected: {data['name']}  (AppID {data['id']})")
+            self._lookup_label.setStyleSheet("color:#88cc88;")
             self._rebuild_files_list()
 
     def _on_name_changed(self, _text: str):
@@ -402,5 +406,6 @@ class SteamSyncDialog(QDialog):
             QMessageBox.information(
                 self, "Sync Complete",
                 f"Installed {len(result.installed)} file(s) to:\n{result.grid_folder}\n\n"
-                "Restart Steam or reload your library to see the new artwork."
+                "Your artwork should appear in Steam within a few seconds.\n"
+                "If it doesn't, try scrolling the library or switching views."
             )

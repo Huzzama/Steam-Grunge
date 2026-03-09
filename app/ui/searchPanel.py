@@ -130,8 +130,34 @@ class SearchPanel(QWidget):
 
     # ── UI construction ────────────────────────────────────────────────────────
     def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
+        # Outer layout — holds the scrollable top section + fixed artwork area
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ── Scrollable top section (title → filters) ───────────────────────
+        top_scroll = QScrollArea()
+        top_scroll.setWidgetResizable(True)
+        top_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        top_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        top_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        top_scroll.setStyleSheet("""
+            QScrollArea { border: none; background: transparent; }
+            QScrollBar:vertical {
+                background: #111; width: 6px; margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #333; border-radius: 3px; min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover { background: #555; }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical { height: 0; }
+        """)
+
+        top_widget = QWidget()
+        top_widget.setStyleSheet("background: transparent;")
+        root = QVBoxLayout(top_widget)
+        root.setContentsMargins(10, 10, 10, 6)
         root.setSpacing(6)
 
         # Title
@@ -210,9 +236,19 @@ class SearchPanel(QWidget):
         filter_grid.addWidget(self.nsfw_combo, 1, 3)
 
         root.addLayout(filter_grid)
+        root.addStretch(0)
 
-        # ── Artwork grid ───────────────────────────────────
-        root.addWidget(self._hdr("ARTWORK"))
+        top_scroll.setWidget(top_widget)
+        outer.addWidget(top_scroll, stretch=0)
+
+        # ── Artwork section (fixed below, takes remaining space) ───────────
+        artwork_widget = QWidget()
+        artwork_widget.setStyleSheet("background: #161616;")
+        artwork_layout = QVBoxLayout(artwork_widget)
+        artwork_layout.setContentsMargins(10, 0, 10, 0)
+        artwork_layout.setSpacing(4)
+
+        artwork_layout.addWidget(self._hdr("ARTWORK"))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -225,7 +261,13 @@ class SearchPanel(QWidget):
         self.grid_layout.setSpacing(5)
         self.grid_layout.setContentsMargins(4, 4, 4, 4)
         scroll.setWidget(self.thumb_container)
-        root.addWidget(scroll, stretch=1)
+        artwork_layout.addWidget(scroll, stretch=1)
+
+        outer.addWidget(artwork_widget, stretch=1)
+
+        # Keep a reference so pagination can be added below artwork_widget
+        self._outer_layout = outer
+        self._artwork_layout = artwork_layout
 
         # ── Pagination ─────────────────────────────────────
         page_widget = QWidget()
@@ -256,7 +298,7 @@ class SearchPanel(QWidget):
         self.page_info.setStyleSheet("color:#555; font-size:12px; font-family:'Courier New'; padding-left:4px;")
         self.page_bar.addWidget(self.page_info, stretch=1)
 
-        root.addWidget(page_widget)
+        artwork_layout.addWidget(page_widget)
 
     def _hdr(self, text: str) -> QLabel:
         l = QLabel(text); l.setObjectName("hdr"); return l

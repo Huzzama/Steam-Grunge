@@ -996,16 +996,22 @@ class MainWindow(QMainWindow):
             self._status_label.setText(f"Opened: {path}")
 
     def _export(self):
-        """Export: AppID confirm (once per game) → save with Steam filename → show path."""
-        tab  = self.tab_manager.current_tab()
-        path = tab.export(parent_widget=self)
-        if path:
-            self._status_label.setText(f"Exported: {path}")
-            QMessageBox.information(
-                self, "Export Complete",
-                f"Artwork saved to:\n{path}\n\n"
-                "Use  Sync to Steam  in the menu bar to install it into Steam."
-            )
+        """Export current canvas and remember the path for Sync."""
+        tab = self.tab_manager.current_tab()
+        final = tab.preview_canvas.compose_to_pil()
+        if final is None:
+            QMessageBox.warning(self, "Export", "Nothing to export yet.")
+            return
+        tab.state.composed_image = final
+        path = exporter.export_image(
+            final,
+            tab.state.current_template,
+            tab.state.selected_game_name or "untitled"
+        )
+        # Store path so Sync always uses this exact file
+        tab.state.export_paths[tab.state.current_template] = path
+        print(f"[export] {tab.state.current_template} → {path}")
+        QMessageBox.information(self, "Exported", f"Saved to:\n{path}")
 
     def _reset_filters(self):
         tab = self.tab_manager.current_tab()
@@ -1027,34 +1033,52 @@ class MainWindow(QMainWindow):
             subprocess.Popen(["xdg-open", EXPORT_FOLDER])
 
     def _open_sync_dialog(self):
-        """Open the Sync to Steam dialog for the active tab."""
-        from app.ui.steamSyncDialog import SteamSyncDialog
-        from app.config import EXPORT_COVER, EXPORT_WIDE, EXPORT_HERO, EXPORT_LOGO, EXPORT_ICON
-        import glob, os
+        """
+        Open the Sync to Steam dialog.
 
-        tab       = self.tab_manager.current_tab()
-        game_name = tab.state.selected_game_name or ""
-        tpl       = tab.state.current_template
+        Always re-exports the current template from the live canvas so Sync
+        never uses a stale previously-exported file after edits.
+        Other templates retain their last-exported paths if they exist.
+        """
+        tab = self.tab_manager.current_tab()
 
-        # Find the most recently exported file for each template type
-        def _latest(folder, pattern):
-            files = glob.glob(os.path.join(folder, pattern))
-            return max(files, key=os.path.getmtime) if files else ""
+        # ── Always re-export the current template from the live canvas ────────
+        final = tab.preview_canvas.compose_to_pil()
+        if final is None:
+            QMessageBox.warning(
+                self, "Sync to Steam",
+                "Nothing to sync yet.\n"
+                "Add some artwork to the canvas first."
+            )
+            return
+        tab.state.composed_image = final
+        path = exporter.export_image(
+            final,
+            tab.state.current_template,
+            tab.state.selected_game_name or "untitled"
+        )
+        tab.state.export_paths[tab.state.current_template] = path
+        print(f"[sync] exported {tab.state.current_template} → {path}")
 
+        # ── Build exports dict: fresh current template + any prior exports ────
         exports = {
-            "cover":     _latest(EXPORT_COVER, "*.png"),
-            "vhs_cover": _latest(EXPORT_COVER, "*vhs*.png"),
-            "wide":      _latest(EXPORT_WIDE,  "*.png"),
-            "hero":      _latest(EXPORT_HERO,  "*.png"),
-            "logo":      _latest(EXPORT_LOGO,  "*.png"),
-            "icon":      _latest(EXPORT_ICON,  "*.png"),
+            tpl: p
+            for tpl, p in tab.state.export_paths.items()
+            if p and os.path.isfile(p)
         }
-        # Keep only templates that have a file
-        exports = {k: v for k, v in exports.items() if v}
 
-        dlg = SteamSyncDialog(game_name=game_name, exports=exports, parent=self)
+        # Log exactly what will be synced so mismatches are easy to spot
+        print("[sync] files queued for Steam:")
+        for tpl, p in exports.items():
+            print(f"  {tpl:15s} → {p}")
+
+        from app.ui.steamSyncDialog import SteamSyncDialog
+        dlg = SteamSyncDialog(
+            game_name=tab.state.selected_game_name or "",
+            exports=exports,
+            parent=self,
+        )
         dlg.exec()
-
     # ── File handlers ─────────────────────────────────────────────────────────
 
     def _import_image_as_layer(self):
@@ -1105,6 +1129,7 @@ class MainWindow(QMainWindow):
                 path = run_export_flow(tab, parent_widget=self)
                 if path:
                     saved.append(path)
+                    tab.state.export_paths[tpl] = path  # track for Sync
         finally:
             tab.state.current_template = orig_tpl
             progress.setValue(len(templates))
