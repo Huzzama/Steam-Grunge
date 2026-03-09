@@ -26,10 +26,8 @@ jobs:
       - name: Extract version
         shell: bash
         run: |
-          # Strip the leading 'v' from the tag (v1.1.0 → 1.1.0)
           RAW="${GITHUB_REF#refs/tags/v}"
           echo "VERSION=$RAW" >> $GITHUB_ENV
-          # Also write VERSION file so the app reads the right version at runtime
           echo "$RAW" > VERSION
           echo "Building version: $RAW"
 
@@ -78,19 +76,17 @@ jobs:
           sha256sum SteamGrungeEditor-*-Setup.exe > SHA256SUMS-windows.txt
           cat SHA256SUMS-windows.txt
 
-      - name: Upload installer to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          fail_on_unmatched_files: false
-          files: |
-            dist/installer/SteamGrungeEditor-*-Setup.exe
-            dist/installer/SHA256SUMS-windows.txt
-
-      - name: Retry upload if needed
-        if: failure()
-        uses: softprops/action-gh-release@v2
-        with:
-          fail_on_unmatched_files: false
-          files: |
-            dist/installer/SteamGrungeEditor-*-Setup.exe
-            dist/installer/SHA256SUMS-windows.txt
+      - name: Upload to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Wait for the release to exist (Linux job creates it)
+          for i in {1..10}; do
+            gh release view "$TAG" && break || sleep 15
+          done
+          gh release upload "$TAG" \
+            dist/installer/SteamGrungeEditor-*-Setup.exe \
+            dist/installer/SHA256SUMS-windows.txt \
+            --clobber
