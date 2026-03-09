@@ -9,7 +9,7 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/UI-PySide6-green)](https://doc.qt.io/qtforpython/)
-[![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)]()
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 
 </div>
@@ -55,57 +55,50 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 
 ## Installation
 
-### Option A — AppImage (any Linux distro, no install needed)
+### 🪟 Windows
 
-Download the latest `.AppImage` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
+Download `SteamGrungeEditor-Setup.exe` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases) and run it.
+
+- Next → Next → Install — standard Windows setup wizard
+- Creates a Start Menu shortcut automatically
+- Uninstall anytime from Programs & Features
+
+> **Note:** Windows may show a SmartScreen warning on first run since the app is not yet code-signed. Click **More info → Run anyway** to proceed.
+
+---
+
+### 🐧 Linux
+
+**Option A — AppImage** (any distro, no install needed)
 
 ```bash
 chmod +x Steam_Grunge_Editor-x86_64.AppImage
 ./Steam_Grunge_Editor-x86_64.AppImage
 ```
 
-### Option B — .deb (Ubuntu / Linux Mint / Debian / Pop!_OS)
-
-Download the latest `.deb` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
+**Option B — .deb** (Ubuntu / Linux Mint / Debian / Pop!_OS)
 
 ```bash
 sudo dpkg -i steam-grunge-editor_1.0.0_all.deb
-sudo apt-get install -f    # fix any missing dependencies if needed
+sudo apt-get install -f
 ```
 
-### Option C — Arch Linux / AUR (Arch, Manjaro, EndeavourOS)
+**Option C — AUR** (Arch / Manjaro / EndeavourOS)
 
 ```bash
 yay -S steam-grunge-editor
 ```
 
-Or manually:
+**Option D — Run from source** (any OS)
 
 ```bash
-git clone https://github.com/Huzzama/Steam-Grunge.git
-cd Steam-Grunge/packaging/arch
-makepkg -si
-```
-
-### Option D — Run from source
-
-```bash
-# 1. Clone the repo
 git clone https://github.com/Huzzama/Steam-Grunge.git
 cd Steam-Grunge
-
-# 2. Create a virtual environment
 python3 -m venv venv
-source venv/bin/activate
-
-# 3. Install dependencies
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# 4. Run the app
 python app/main.py
 ```
-
-**Requirements:** Python 3.10+, pip, a free [SteamGridDB](https://www.steamgriddb.com) API key.
 
 ---
 
@@ -153,33 +146,39 @@ Exported files follow Steam's naming convention automatically:
 Steam-Grunge/
 ├── .github/
 │   └── workflows/
-│       └── release.yml           <- auto-builds packages on tag push
+│       ├── release.yml              <- builds AppImage + .deb on tag push
+│       └── build-windows.yml        <- builds Windows installer on tag push
 ├── app/
 │   ├── assets/
-│   │   ├── brushes/              <- brush library (.gbr, .png, .zip)
-│   │   ├── fonts/                <- custom fonts (.ttf, .otf)
-│   │   ├── platformBars/         <- console bar overlays
-│   │   ├── ratings/              <- rating badge overlays
-│   │   ├── templates/            <- template PNG overlays
-│   │   ├── textures/             <- deterioration textures
-│   │   └── icon.png              <- app icon
-│   ├── editor/                   <- compositor, exports, templates
-│   ├── filters/                  <- color, film grain, VHS, distress
-│   ├── services/                 <- SteamGridDB API, Steam sync, export flow
+│   │   ├── brushes/                 <- brush library (.gbr, .png, .zip)
+│   │   ├── fonts/                   <- custom fonts (.ttf, .otf)
+│   │   ├── platformBars/            <- console bar overlays
+│   │   ├── ratings/                 <- rating badge overlays
+│   │   ├── templates/               <- template PNG overlays
+│   │   ├── textures/                <- deterioration textures
+│   │   ├── icon.png                 <- app icon
+│   │   └── icon.ico                 <- Windows icon (auto-generated)
+│   ├── editor/                      <- compositor, exports, templates
+│   ├── filters/                     <- color, film grain, VHS, distress
+│   ├── services/                    <- SteamGridDB API, Steam sync, export flow
 │   ├── ui/
-│   │   ├── canvas/               <- canvas engine (layers, fx, tools, handles)
-│   │   └── ...                   <- panels, dialogs, widgets
+│   │   ├── canvas/                  <- canvas engine (layers, fx, tools, handles)
+│   │   └── ...                      <- panels, dialogs, widgets
 │   ├── config.py
-│   ├── main.py                   <- entry point
+│   ├── main.py                      <- entry point
 │   └── state.py
 ├── packaging/
-│   ├── appimage/build-appimage.sh
-│   ├── arch/PKGBUILD
-│   ├── debian/build-deb.sh
-│   ├── desktop/steam-grunge-editor.desktop
-│   └── test-packages.sh
-├── data/                         <- cache & presets (git-ignored)
-├── exports/                      <- exported artwork (git-ignored)
+│   ├── appimage/build-appimage.sh   <- Linux AppImage builder
+│   ├── arch/PKGBUILD                <- Arch / AUR package
+│   ├── debian/build-deb.sh          <- .deb builder
+│   ├── desktop/                     <- Linux .desktop file
+│   ├── windows/
+│   │   ├── steam_grunge_editor.spec <- PyInstaller config
+│   │   ├── steam_grunge_editor.iss  <- Inno Setup script
+│   │   └── build-windows.bat        <- local Windows build script
+│   └── shared/icons/                <- multi-size icons for packaging
+├── data/                            <- cache & presets (git-ignored)
+├── exports/                         <- exported artwork (git-ignored)
 ├── VERSION
 ├── requirements.txt
 └── .gitignore

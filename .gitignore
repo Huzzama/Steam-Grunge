@@ -57,3 +57,10 @@ secrets.json
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
+
+# ── Windows build artifacts ───────────────────────────────────────────────────
+dist/
+build/
+packaging/windows/__pycache__/
+app/assets/icon.ico      # auto-generated during build, not source
+*.spec.bak
