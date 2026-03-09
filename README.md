@@ -18,13 +18,17 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 
 ## Screenshots
 
-| | |
-|---|---|
-| ![Editor with artwork](docs/screenshots/editor-artwork.png) | ![Multi-tab workflow](docs/screenshots/multi-tab.png) |
-| *Layer-based editor with SteamGridDB search and grunge effects* | *Work on multiple games simultaneously with independent tabs* |
+![Editor with grunge effects](docs/screenshots/editor-artwork.png)
+*Full editor — SteamGridDB search results, layer stack, and grunge effects applied to a VHS cover*
+
+![Multi-tab workflow](docs/screenshots/multi-tab.png)
+*Work on multiple games simultaneously — each tab has its own independent canvas and layers*
 
 ![App on first launch](docs/screenshots/first-launch.png)
 *Clean start — search any game and begin editing*
+
+![Early beta](docs/screenshots/beta.jpg)
+*Early beta — the app before templates and tabs were added*
 
 ---
 
