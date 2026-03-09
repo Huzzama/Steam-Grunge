@@ -1,83 +1,96 @@
-name: Build macOS Package
+name: Build Windows Installer
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-macos:
-    name: Build macOS .dmg
-    runs-on: macos-latest
-    timeout-minutes: 60
+  build-windows:
+    name: Build Windows .exe Installer
+    runs-on: windows-latest
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
-
-      - name: Write VERSION file
-        run: echo "${GITHUB_REF#refs/tags/v}" > VERSION
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Extract version
+        shell: bash
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
-          brew install create-dmg
+          # Strip the leading 'v' from the tag (v1.1.0 → 1.1.0)
+          RAW="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$RAW" >> $GITHUB_ENV
+          # Also write VERSION file so the app reads the right version at runtime
+          echo "$RAW" > VERSION
+          echo "Building version: $RAW"
 
-      - name: Generate icon.icns
+      - name: Install Python dependencies
         run: |
-          ICONSET="packaging/macos/icon.iconset"
-          mkdir -p "$ICONSET"
-          for size in 16 32 64 128 256 512; do
-            sips -z $size $size app/assets/icon.png \
-              --out "$ICONSET/icon_${size}x${size}.png"
-            sips -z $((size*2)) $((size*2)) app/assets/icon.png \
-              --out "$ICONSET/icon_${size}x${size}@2x.png"
-          done
-          iconutil -c icns "$ICONSET" -o app/assets/icon.icns
-          rm -rf "$ICONSET"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
 
-      - name: Build .app with PyInstaller
+      - name: Convert icon.png to icon.ico
         run: |
-          pyinstaller packaging/macos/steam_grunge_editor_mac.spec \
-            --distpath packaging/macos/dist \
-            --workpath packaging/macos/build \
-            --noconfirm
+          python -c "
+          from PIL import Image
+          img = Image.open('app/assets/icon.png')
+          img.save('app/assets/icon.ico', format='ICO',
+                   sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          print('icon.ico created')
+          "
 
-      - name: Set version in Info.plist
+      - name: Build with PyInstaller
         run: |
-          VER="${GITHUB_REF#refs/tags/v}"
-          /usr/libexec/PlistBuddy -c \
-            "Set :CFBundleVersion $VER" \
-            "packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c \
-            "Set :CFBundleShortVersionString $VER" \
-            "packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
+          pyinstaller packaging/windows/steam_grunge_editor.spec --noconfirm --clean
 
-      - name: Create .dmg
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --yes
+
+      - name: Build installer with Inno Setup
+        shell: cmd
         run: |
-          VER="${GITHUB_REF#refs/tags/v}"
-          create-dmg \
-            --volname "Steam Grunge Editor $VER" \
-            --volicon "app/assets/icon.icns" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --icon "Steam Grunge Editor.app" 150 185 \
-            --hide-extension "Steam Grunge Editor.app" \
-            --app-drop-link 450 185 \
-            "packaging/macos/Steam_Grunge_Editor-${VER}.dmg" \
-            "packaging/macos/dist/"
+          mkdir dist\installer
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ^
+            /DAppVersion=${{ env.VERSION }} ^
+            packaging\windows\steam_grunge_editor.iss
 
-      - name: Upload .dmg to existing release
+      - name: Verify installer version
+        shell: bash
+        run: |
+          ls dist/installer/
+          echo "Expected: SteamGrungeEditor-${{ env.VERSION }}-Setup.exe"
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          cd dist/installer
+          sha256sum SteamGrungeEditor-*-Setup.exe > SHA256SUMS-windows.txt
+          cat SHA256SUMS-windows.txt
+
+      - name: Upload installer to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: packaging/macos/Steam_Grunge_Editor-*.dmg
+          fail_on_unmatched_files: false
+          files: |
+            dist/installer/SteamGrungeEditor-*-Setup.exe
+            dist/installer/SHA256SUMS-windows.txt
+
+      - name: Retry upload if needed
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: false
+          files: |
+            dist/installer/SteamGrungeEditor-*-Setup.exe
+            dist/installer/SHA256SUMS-windows.txt

@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:      # allows manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -25,7 +25,13 @@ jobs:
 
       - name: Extract version
         shell: bash
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+        run: |
+          # Strip the leading 'v' from the tag (v1.1.0 → 1.1.0)
+          RAW="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$RAW" >> $GITHUB_ENV
+          # Also write VERSION file so the app reads the right version at runtime
+          echo "$RAW" > VERSION
+          echo "Building version: $RAW"
 
       - name: Install Python dependencies
         run: |
@@ -48,9 +54,8 @@ jobs:
           pyinstaller packaging/windows/steam_grunge_editor.spec --noconfirm --clean
 
       - name: Install Inno Setup
-        run: |
-          choco install innosetup --yes
         shell: powershell
+        run: choco install innosetup --yes
 
       - name: Build installer with Inno Setup
         shell: cmd
@@ -59,6 +64,12 @@ jobs:
           "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ^
             /DAppVersion=${{ env.VERSION }} ^
             packaging\windows\steam_grunge_editor.iss
+
+      - name: Verify installer version
+        shell: bash
+        run: |
+          ls dist/installer/
+          echo "Expected: SteamGrungeEditor-${{ env.VERSION }}-Setup.exe"
 
       - name: Generate checksum
         shell: bash
@@ -70,6 +81,16 @@ jobs:
       - name: Upload installer to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: false
+          files: |
+            dist/installer/SteamGrungeEditor-*-Setup.exe
+            dist/installer/SHA256SUMS-windows.txt
+
+      - name: Retry upload if needed
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: false
           files: |
             dist/installer/SteamGrungeEditor-*-Setup.exe
             dist/installer/SHA256SUMS-windows.txt
