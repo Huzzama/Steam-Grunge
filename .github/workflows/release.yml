@@ -12,7 +12,6 @@ env:
   VERSION: ${{ github.ref_name }}
 
 jobs:
-  # ── Linux ───────────────────────────────────────────────────────────────────
   build-linux:
     name: Build Linux Packages
     runs-on: ubuntu-22.04
@@ -100,6 +99,19 @@ jobs:
             sha256sum -c SHA256SUMS.txt
             ```
           generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            packaging/appimage/Steam_Grunge_Editor-*.AppImage
+            packaging/debian/steam-grunge-editor_*.deb
+            SHA256SUMS.txt
+        # Retry up to 3 times on transient GitHub API failures
+      - name: Retry release upload if needed
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Steam Grunge Editor ${{ github.ref_name }}"
+          generate_release_notes: false
+          fail_on_unmatched_files: false
           files: |
             packaging/appimage/Steam_Grunge_Editor-*.AppImage
             packaging/debian/steam-grunge-editor_*.deb

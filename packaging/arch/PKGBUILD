@@ -11,7 +11,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 pkgname=steam-grunge-editor
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Grunge-style Steam artwork editor — create distressed covers, heroes, logos and icons for your Steam library"
 arch=('any')
