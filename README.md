@@ -9,7 +9,7 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/UI-PySide6-green)](https://doc.qt.io/qtforpython/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)]()
+[![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 
 </div>
@@ -53,14 +53,41 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 
 ---
 
-## Requirements
-
-- Python 3.10 or newer
-- A free [SteamGridDB](https://www.steamgriddb.com) account + API key
-
----
-
 ## Installation
+
+### Option A — AppImage (any Linux distro, no install needed)
+
+Download the latest `.AppImage` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
+
+```bash
+chmod +x Steam_Grunge_Editor-x86_64.AppImage
+./Steam_Grunge_Editor-x86_64.AppImage
+```
+
+### Option B — .deb (Ubuntu / Linux Mint / Debian / Pop!_OS)
+
+Download the latest `.deb` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
+
+```bash
+sudo dpkg -i steam-grunge-editor_1.0.0_all.deb
+sudo apt-get install -f    # fix any missing dependencies if needed
+```
+
+### Option C — Arch Linux / AUR (Arch, Manjaro, EndeavourOS)
+
+```bash
+yay -S steam-grunge-editor
+```
+
+Or manually:
+
+```bash
+git clone https://github.com/Huzzama/Steam-Grunge.git
+cd Steam-Grunge/packaging/arch
+makepkg -si
+```
+
+### Option D — Run from source
 
 ```bash
 # 1. Clone the repo
@@ -69,11 +96,6 @@ cd Steam-Grunge
 
 # 2. Create a virtual environment
 python3 -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# Linux / macOS
 source venv/bin/activate
 
 # 3. Install dependencies
@@ -83,6 +105,8 @@ pip install -r requirements.txt
 python app/main.py
 ```
 
+**Requirements:** Python 3.10+, pip, a free [SteamGridDB](https://www.steamgriddb.com) API key.
+
 ---
 
 ## Getting a SteamGridDB API Key
@@ -90,7 +114,7 @@ python app/main.py
 1. Go to [steamgriddb.com/profile/preferences/api](https://www.steamgriddb.com/profile/preferences/api)
 2. Log in or create a free account
 3. Click **Generate API Key** and copy it
-4. In the app, click **Set API Key** in the top-left search panel and paste it
+4. In the app, open the search panel and paste your key when prompted
 
 Your key is stored locally and never shared.
 
@@ -103,15 +127,15 @@ Your key is stored locally and never shared.
 2. Click any artwork thumbnail to add it as a canvas layer
 3. Choose a template (Cover, Wide, Hero, Logo, Icon...)
 4. Apply grunge effects using the right panel sliders
-5. File -> Export  (Ctrl+E)
-      |-- Confirms Steam AppID once per session
-      +-- Saves file with correct Steam filename
-6. Sync to Steam -> Sync to Steam  (Ctrl+Shift+S)
-      |-- Copies files into your Steam userdata/grid folder
-      +-- Restart Steam to see your artwork
+5. File → Export  (Ctrl+E)
+      ├── Confirms Steam AppID once per session
+      └── Saves file with correct Steam filename
+6. Sync to Steam → Sync to Steam  (Ctrl+Shift+S)
+      ├── Copies files into your Steam userdata/grid folder
+      └── Restart Steam to see your new artwork
 ```
 
-Exported files follow Steam's naming convention:
+Exported files follow Steam's naming convention automatically:
 
 | Template | Filename |
 |---|---|
@@ -127,25 +151,36 @@ Exported files follow Steam's naming convention:
 
 ```
 Steam-Grunge/
+├── .github/
+│   └── workflows/
+│       └── release.yml           <- auto-builds packages on tag push
 ├── app/
 │   ├── assets/
-│   │   ├── brushes/          <- brush library (.gbr, .png, .zip)
-│   │   ├── fonts/            <- custom fonts (.ttf, .otf)
-│   │   ├── platformBars/     <- console bar overlays
-│   │   ├── ratings/          <- rating badge overlays
-│   │   ├── templates/        <- template PNG overlays
-│   │   ├── textures/         <- deterioration textures
-│   │   └── icon.png          <- app icon
-│   ├── editor/               <- compositor, exports, templates
-│   ├── filters/              <- color, film grain, VHS, distress
-│   ├── services/             <- SteamGridDB API, Steam sync, export flow
-│   ├── ui/                   <- PySide6 windows, panels, dialogs
-│   │   └── canvas/           <- canvas engine (layers, fx, tools, handles)
+│   │   ├── brushes/              <- brush library (.gbr, .png, .zip)
+│   │   ├── fonts/                <- custom fonts (.ttf, .otf)
+│   │   ├── platformBars/         <- console bar overlays
+│   │   ├── ratings/              <- rating badge overlays
+│   │   ├── templates/            <- template PNG overlays
+│   │   ├── textures/             <- deterioration textures
+│   │   └── icon.png              <- app icon
+│   ├── editor/                   <- compositor, exports, templates
+│   ├── filters/                  <- color, film grain, VHS, distress
+│   ├── services/                 <- SteamGridDB API, Steam sync, export flow
+│   ├── ui/
+│   │   ├── canvas/               <- canvas engine (layers, fx, tools, handles)
+│   │   └── ...                   <- panels, dialogs, widgets
 │   ├── config.py
-│   ├── main.py               <- entry point
+│   ├── main.py                   <- entry point
 │   └── state.py
-├── data/                     <- cache, presets (git-ignored)
-├── exports/                  <- exported artwork (git-ignored)
+├── packaging/
+│   ├── appimage/build-appimage.sh
+│   ├── arch/PKGBUILD
+│   ├── debian/build-deb.sh
+│   ├── desktop/steam-grunge-editor.desktop
+│   └── test-packages.sh
+├── data/                         <- cache & presets (git-ignored)
+├── exports/                      <- exported artwork (git-ignored)
+├── VERSION
 ├── requirements.txt
 └── .gitignore
 ```
@@ -186,5 +221,5 @@ Pull requests are welcome. For major changes please open an issue first to discu
 ---
 
 <div align="center">
-Made with love for the Steam community
+Made with ♥ for the Steam community
 </div>
