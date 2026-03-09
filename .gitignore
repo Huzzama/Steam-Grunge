@@ -37,6 +37,21 @@ packaging/arch/src/
 packaging/arch/*.pkg.tar.zst
 packaging/arch/*.pkg.tar.xz
 
+# ── macOS build artifacts ─────────────────────────────────────────────────────
+packaging/macos/dist/
+packaging/macos/build/
+packaging/macos/icon.iconset/
+packaging/macos/*.dmg
+app/assets/icon.icns
+
+# ── Windows build artifacts ───────────────────────────────────────────────────
+packaging/windows/Output/
+packaging/windows/dist/
+packaging/windows/build/
+
+# ── Screenshots (keep folder, ignore OS junk inside) ──────────────────────────
+docs/screenshots/.DS_Store
+
 # ── OS files ──────────────────────────────────────────────────────────────────
 .DS_Store
 .DS_Store?
@@ -58,9 +73,5 @@ secrets.json
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
 
-# ── Windows build artifacts ───────────────────────────────────────────────────
-dist/
-build/
-packaging/windows/__pycache__/
-app/assets/icon.ico      # auto-generated during build, not source
-*.spec.bak
+# ── Nested repo (Steam-Grunge subfolder if cloned inside project) ─────────────
+Steam-Grunge/
