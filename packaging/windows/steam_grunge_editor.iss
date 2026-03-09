@@ -1,7 +1,7 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 ; steam_grunge_editor.iss — Inno Setup installer script
 ;
-; Produces: SteamGrungeEditor-1.0.0-Setup.exe
+; Produces: SteamGrungeEditor-{version}-Setup.exe
 ;
 ; How to build:
 ;   1. Install Inno Setup 6 from https://jrsoftware.org/isdl.php
@@ -12,7 +12,9 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define AppName      "Steam Grunge Editor"
-#define AppVersion   "1.0.0"
+#ifndef AppVersion
+  #define AppVersion "1.0.0"
+#endif
 #define AppPublisher "Huzzama"
 #define AppURL       "https://github.com/Huzzama/Steam-Grunge"
 #define AppExeName   "SteamGrungeEditor.exe"
