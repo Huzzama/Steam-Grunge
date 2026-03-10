@@ -20,6 +20,7 @@ a = Analysis(
         (str(ASSETS_DIR / "platformBars"), "app/assets/platformBars"),
         (str(ASSETS_DIR / "icon.png"),     "app/assets"),
         (str(REPO_ROOT  / "requirements.txt"), "."),
+        (str(REPO_ROOT  / "VERSION"),           "."),
     ],
     hiddenimports=[
         "PySide6.QtCore",
@@ -75,8 +76,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName":              "Steam Grunge Editor",
         "CFBundleDisplayName":       "Steam Grunge Editor",
-        "CFBundleVersion":           "1.0.0",
-        "CFBundleShortVersionString":"1.0.0",
+        "CFBundleVersion":           "2.0.0",
+        "CFBundleShortVersionString":"2.0.0",
         "CFBundleIdentifier":        "com.huzzama.steamgrungeeditor",
         "CFBundleIconFile":          "icon.icns",
         "NSHighResolutionCapable":   True,

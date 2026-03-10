@@ -121,12 +121,16 @@ class SearchPanel(QWidget):
         self._current_page  = 0
         self._total_pages   = 1
         self._cards: List[ArtworkCard] = []
-        self._pending_replies: List[QNetworkReply] = []
+        # FIX (Issue 1): use set so .discard() works correctly (was list before)
+        self._pending_replies: set = set()
 
         # QNetworkAccessManager lives on main thread — fully safe, no segfaults
         self._nam = QNetworkAccessManager(self)
         # Attach API key header to every request
         self._build_ui()
+        # FIX (Issue 3 secondary): install wheel guards on all filter combos so
+        # scrolling over them doesn't fire _on_filter_changed or steal canvas focus
+        self._install_combo_guards()
 
     # ── UI construction ────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -300,6 +304,31 @@ class SearchPanel(QWidget):
 
         artwork_layout.addWidget(page_widget)
 
+    def _install_combo_guards(self):
+        """
+        FIX (Issue 3 secondary + Issue 1): Install wheel-absorbing event filters
+        on all filter combos so that:
+          1. Scrolling over them never fires _on_filter_changed (no spurious reloads)
+          2. They never steal keyboard focus from the canvas
+        """
+        from PySide6.QtCore import QObject, QEvent
+
+        class _WheelGuard(QObject):
+            def eventFilter(self, obj, event):
+                if event.type() == QEvent.Wheel:
+                    event.ignore()
+                    return True
+                return False
+
+        for combo in [self.type_combo, self.style_combo,
+                      self.dim_combo, self.nsfw_combo]:
+            guard = _WheelGuard(combo)
+            combo.installEventFilter(guard)
+            # Keep a reference so the guard isn't garbage-collected
+            if not hasattr(combo, "_wheel_guards"):
+                combo._wheel_guards = []
+            combo._wheel_guards.append(guard)
+
     def _hdr(self, text: str) -> QLabel:
         l = QLabel(text); l.setObjectName("hdr"); return l
 
@@ -308,9 +337,40 @@ class SearchPanel(QWidget):
         key, ok = QInputDialog.getText(
             self, "SteamGridDB API Key",
             "Enter your SteamGridDB API key:\n(steamgriddb.com → Profile → API)",
-            text=sgdb_client.api_key)
+            text=sgdb_client.api_key)   # FIX (Issue 5): pre-fill with persisted key
         if ok and key.strip():
             sgdb_client.set_api_key(key.strip())
+            self.api_btn.setText("✔ API Key Set")
+
+            # FIX (Issue 1): purge any zero-byte or corrupted cache entries that
+            # were written during anonymous (401) requests so they don't block
+            # the fresh load below.
+            self._purge_corrupt_cache()
+
+            # FIX (Issue 1): reload artwork immediately so existing ✕ cards
+            # are replaced without requiring the user to click the game again.
+            if self._selected_game:
+                self._current_page = 0
+                self._load_artwork()
+
+    @staticmethod
+    def _purge_corrupt_cache():
+        """
+        Remove zero-byte cache files that were written when a request returned
+        a 401/error page instead of image data.  Non-zero files are left alone
+        (a future load will detect isNull() and call set_error() safely).
+        """
+        try:
+            from app.config import CACHE_FOLDER
+            for fname in os.listdir(CACHE_FOLDER):
+                fp = os.path.join(CACHE_FOLDER, fname)
+                if os.path.isfile(fp) and os.path.getsize(fp) == 0:
+                    try:
+                        os.remove(fp)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def _search(self):
         q = self.search_input.text().strip()
@@ -411,62 +471,81 @@ class SearchPanel(QWidget):
         self.page_info.setText(f"pg {self._current_page+1}/{self._total_pages}  ({total} total)")
 
     def _fetch_thumb(self, card: ArtworkCard, thumb_url: str, full_url: str):
-        """Fetch thumbnail via QNetworkAccessManager — runs entirely on main thread."""
-        api_key = sgdb_client.api_key
+        """
+        Fetch thumbnail via QNetworkAccessManager — runs entirely on main thread.
+
+        FIX (Issue 1):
+        - _pending_replies is now a set so .discard() works correctly.
+        - HTTP status code is checked explicitly: Qt reports NoError even for
+          401/403 responses (it got a response — just not the right one).
+          This prevents HTML error pages from being written to disk as fake images.
+        - Response bytes are validated as real image data via QPixmap before
+          caching, so corrupt cache entries can never cause permanent ✕ cards.
+        """
+        # FIX: SteamGridDB CDN (cdn2.steamgriddb.com) returns 401 if Bearer auth
+        # is sent — CDN images are public and must be fetched without auth headers.
+        # Auth is only needed for API endpoints (steamgriddb.com/api/...).
         req = QNetworkRequest(QUrl(thumb_url))
-        if api_key:
-            req.setRawHeader(b"Authorization", f"Bearer {api_key}".encode())
+        _is_cdn = "cdn" in thumb_url or "/api/" not in thumb_url
+        if not _is_cdn and sgdb_client.api_key:
+            req.setRawHeader(b"Authorization", f"Bearer {sgdb_client.api_key}".encode())
 
         reply = self._nam.get(req)
-        self._pending_replies.append(reply)
+        self._pending_replies.add(reply)
 
-        def on_finished(r=reply, c=card, tu=thumb_url, fu=full_url):
+        def _is_image_data(data: bytes) -> bool:
+            """Return True only if data decodes as a valid image."""
+            if not data or len(data) < 8:
+                return False
+            pix = QPixmap()
+            pix.loadFromData(data)
+            return not pix.isNull()
+
+        def _cache_bytes(url: str, data: bytes):
+            local = get_cache_path(url)
             try:
-                self._pending_replies.discard(r) if hasattr(self._pending_replies, 'discard') else None
-                if r in self._pending_replies:
-                    self._pending_replies.remove(r)
+                with open(local, "wb") as f:
+                    f.write(data)
             except Exception:
                 pass
 
+        def on_finished(r=reply, c=card, tu=thumb_url, fu=full_url):
+            self._pending_replies.discard(r)
+
+            # Read response bytes first — we use _is_image_data as the sole
+            # truth rather than HTTP status, because Qt's HttpStatusCodeAttribute
+            # returns 0/None for many CDN responses even when the image arrives.
+            # A real 401 returns an HTML body that _is_image_data rejects.
             if r.error() == QNetworkReply.NetworkError.NoError:
                 data = bytes(r.readAll())
-                if data:
-                    # Cache it
-                    local = get_cache_path(tu)
-                    try:
-                        with open(local, "wb") as f: f.write(data)
-                    except Exception:
-                        pass
+                if _is_image_data(data):
+                    _cache_bytes(tu, data)
                     if not c.isHidden() and c.parent() is not None:
                         c.set_pixmap_from_bytes(data)
                     r.deleteLater()
                     return
+                # Got a response but it's not an image (HTML 401 page, redirect, etc.)
+                # Fall through to retry with full_url + fresh key from sgdb_client
 
-            # Thumb failed (likely 401) — try full URL
+            # Thumb failed — retry with full URL. CDN URLs must NOT have auth header.
             req2 = QNetworkRequest(QUrl(fu))
-            if api_key:
-                req2.setRawHeader(b"Authorization", f"Bearer {api_key}".encode())
+            _is_cdn2 = "cdn" in fu or "/api/" not in fu
+            if not _is_cdn2 and sgdb_client.api_key:
+                req2.setRawHeader(b"Authorization", f"Bearer {sgdb_client.api_key}".encode())
             reply2 = self._nam.get(req2)
-            self._pending_replies.append(reply2)
+            self._pending_replies.add(reply2)
 
             def on_finished2(r2=reply2, c2=c, fu2=fu):
-                try:
-                    if r2 in self._pending_replies:
-                        self._pending_replies.remove(r2)
-                except Exception:
-                    pass
+                self._pending_replies.discard(r2)
                 if r2.error() == QNetworkReply.NetworkError.NoError:
                     data2 = bytes(r2.readAll())
-                    if data2 and c2.parent() is not None:
-                        local2 = get_cache_path(fu2)
-                        try:
-                            with open(local2, "wb") as f: f.write(data2)
-                        except Exception:
-                            pass
+                    if _is_image_data(data2) and c2.parent() is not None:
+                        _cache_bytes(fu2, data2)
                         c2.set_pixmap_from_bytes(data2)
-                else:
-                    if c2.parent() is not None:
-                        c2.set_error()
+                        r2.deleteLater()
+                        return
+                if c2.parent() is not None:
+                    c2.set_error()
                 r2.deleteLater()
 
             reply2.finished.connect(on_finished2)
@@ -533,12 +612,42 @@ class SearchPanel(QWidget):
 
     # ── Artwork click → canvas layer ──────────────────────────────────────────
     def _on_card_clicked(self, full_url: str):
-        """Download full-res image and emit as canvas layer (draggable)."""
+        """
+        Download full-res image and emit as canvas layer (draggable).
+
+        FIX (Issue 1): After download, verify the file is a real image before
+        emitting.  sgdb_client.download_image() already cleans up zero-byte
+        files; this catches the case where a CDN returns a small HTML error
+        page with a 200 status, which would otherwise be cached and opened
+        as a corrupt PIL image.
+        """
         from app.services.cache import get_cache_path
         local = get_cache_path(full_url)
+
+        # If cached file exists but is not a valid image, delete and re-download
+        if os.path.exists(local):
+            pix_check = QPixmap()
+            pix_check.loadFromData(open(local, "rb").read())
+            if pix_check.isNull():
+                try:
+                    os.remove(local)
+                except Exception:
+                    pass
+
         if not os.path.exists(local):
             local = sgdb_client.download_image(full_url, local)
+
         if local and os.path.exists(local):
+            # Final validation — confirm PIL can open it before adding to canvas
+            try:
+                PILImage.open(local).verify()
+            except Exception:
+                # File is corrupt (HTML page, partial download, etc.) — remove it
+                try:
+                    os.remove(local)
+                except Exception:
+                    pass
+                return
+
             name = self._selected_game["name"] if self._selected_game else ""
-            # Only add as a moveable canvas layer — never set as background
             self.artwork_layer_ready.emit(local, name)

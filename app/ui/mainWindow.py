@@ -6,6 +6,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QAction, QKeySequence, QFont
+from app.services.projectIO import (save_project, load_project,
+                                    autosave, SGEPROJ_EXT,
+                                    ProjectIOError)
 from app.ui.canvas.previewCanvas import PreviewCanvas
 from app.ui.searchPanel import SearchPanel
 from app.ui.editorPanel import EditorPanel
@@ -16,6 +19,14 @@ from app.state import state
 from app.editor import compositor
 from app.editor import exports as exporter
 
+# Read version from the VERSION file at project root
+try:
+    import pathlib
+    APP_VERSION = pathlib.Path(
+        pathlib.Path(__file__).resolve().parents[2] / "VERSION"
+    ).read_text(encoding="utf-8").strip()
+except Exception:
+    APP_VERSION = "0.0.0"
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -33,6 +44,19 @@ class MainWindow(QMainWindow):
         self._compose_timer.setSingleShot(True)
         self._compose_timer.setInterval(120)
         self._compose_timer.timeout.connect(self._do_compose)
+
+        # Update checker — fires 3 s after startup so it never delays launch
+        QTimer.singleShot(3000, self._check_for_updates)
+
+        # ── Project file state ────────────────────────────────────────────
+        self._project_path: str = ""       # "" = not yet saved to disk
+        self._project_dirty = False        # True when canvas has unsaved changes
+
+        # Autosave every 5 minutes (silently, only when dirty)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(5 * 60 * 1000)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+        self._autosave_timer.start()
 
     def _build_toolbar(self):
         tb = QToolBar("Tools")
@@ -351,8 +375,30 @@ class MainWindow(QMainWindow):
         # ═══════════════════════════════════════════════════════════════════
         file_menu = menubar.addMenu("File")
 
+        new_proj_act = QAction("New Project", self)
+        new_proj_act.setShortcut(QKeySequence("Ctrl+N"))
+        new_proj_act.triggered.connect(self._new_project)
+        file_menu.addAction(new_proj_act)
+
+        open_proj_act = QAction("Open Project…", self)
+        open_proj_act.setShortcut(QKeySequence("Ctrl+O"))
+        open_proj_act.triggered.connect(self._open_project)
+        file_menu.addAction(open_proj_act)
+
+        save_proj_act = QAction("Save Project", self)
+        save_proj_act.setShortcut(QKeySequence("Ctrl+S"))
+        save_proj_act.triggered.connect(self._save_project)
+        file_menu.addAction(save_proj_act)
+
+        save_as_act = QAction("Save Project As…", self)
+        save_as_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_as_act.triggered.connect(self._save_project_as)
+        file_menu.addAction(save_as_act)
+
+        file_menu.addSeparator()
+
         open_act = QAction("Open Image…", self)
-        open_act.setShortcut(QKeySequence("Ctrl+O"))
+        open_act.setShortcut(QKeySequence("Ctrl+Shift+O"))
         open_act.triggered.connect(self._open_image)
         file_menu.addAction(open_act)
 
@@ -576,6 +622,10 @@ class MainWindow(QMainWindow):
         report_act.triggered.connect(self._report_issue)
         help_menu.addAction(report_act)
 
+        check_updates_act = QAction("Check for Updates", self)
+        check_updates_act.triggered.connect(self._check_for_updates)
+        help_menu.addAction(check_updates_act)
+
         help_menu.addSeparator()
 
         about_act = QAction("About", self)
@@ -693,6 +743,11 @@ class MainWindow(QMainWindow):
         # Tab manager owns the tab bar + all workspaces
         self.tab_manager = TabManager()
         self.tab_manager.status_changed.connect(self._status_label.setText)
+        # Mark project dirty whenever any tab's canvas changes
+        self.tab_manager.current_tab().preview_canvas.layers_changed.connect(
+            self._mark_dirty)
+        self.tab_manager.current_tab().editor_panel.settings_changed.connect(
+            self._mark_dirty)
 
         # Periodically refresh the API key status indicator (every 3s)
         # so it updates immediately after the user sets their key without
@@ -1586,14 +1641,186 @@ class MainWindow(QMainWindow):
         root.addWidget(close_btn)
         dlg.exec()
 
+    # ── Project file management ──────────────────────────────────────────────
+
+    def _mark_dirty(self):
+        """Called whenever canvas layers change — marks project as modified."""
+        self._project_dirty = True
+        self._update_title()
+
+    def _update_title(self):
+        """Reflect project name + dirty state in the window title."""
+        name  = (os.path.basename(self._project_path)
+                 if self._project_path else "Untitled")
+        dirty = " •" if self._project_dirty else ""
+        self.setWindowTitle(f"Steam Grunge Editor — {name}{dirty}")
+
+    def _confirm_discard(self) -> bool:
+        """Return True if it is safe to discard unsaved changes."""
+        if not self._project_dirty:
+            return True
+        from PySide6.QtWidgets import QMessageBox
+        btn = QMessageBox.question(
+            self, "Unsaved Changes",
+            "You have unsaved changes. Discard them?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+        )
+        if btn == QMessageBox.Save:
+            self._save_project()
+            return not self._project_dirty   # False if save was itself cancelled
+        return btn == QMessageBox.Discard
+
+    def _new_project(self):
+        """File → New Project: clear canvas and start fresh."""
+        if not self._confirm_discard():
+            return
+        tab = self.tab_manager.current_tab()
+        tab.preview_canvas._layers.clear()
+        tab.preview_canvas._sel = -1
+        tab.preview_canvas._fx_cache = None
+        tab.preview_canvas._history.clear()
+        tab.preview_canvas._redo_stack.clear()
+        from app.state import AppState
+        tab.state.__dict__.update(AppState().__dict__)
+        tab.editor_panel.refresh_from_state()
+        tab.editor_panel._refresh_layer_list()
+        tab.schedule_compose()
+        tab.preview_canvas.update()
+        self._project_path  = ""
+        self._project_dirty = False
+        self._update_title()
+
+    def _open_project(self):
+        """File → Open Project…"""
+        if not self._confirm_discard():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Project",
+            os.path.expanduser("~"),
+            f"Steam Grunge Editor Projects (*{SGEPROJ_EXT});;All Files (*)",
+        )
+        if not path:
+            return
+        self._load_project_from_path(path)
+
+    def _load_project_from_path(self, path: str):
+        from PySide6.QtWidgets import QMessageBox
+        tab = self.tab_manager.current_tab()
+        try:
+            load_project(tab, path)
+            self._project_path  = path
+            self._project_dirty = False
+            self.tab_manager.rename_current(
+                tab.state.selected_game_name or
+                os.path.splitext(os.path.basename(path))[0])
+            self._update_title()
+        except ProjectIOError as e:
+            QMessageBox.critical(self, "Open Failed", str(e))
+
+    def _save_project(self):
+        """File → Save Project (Ctrl+S)."""
+        if not self._project_path:
+            self._save_project_as()
+            return
+        self._write_project(self._project_path)
+
+    def _save_project_as(self):
+        """File → Save Project As… (Ctrl+Shift+S)."""
+        tab  = self.tab_manager.current_tab()
+        name = tab.state.selected_game_name or "untitled"
+        safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip()
+        default = os.path.join(os.path.expanduser("~"), f"{safe}{SGEPROJ_EXT}")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Project As",
+            self._project_path or default,
+            f"Steam Grunge Editor Projects (*{SGEPROJ_EXT});;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.endswith(SGEPROJ_EXT):
+            path += SGEPROJ_EXT
+        self._write_project(path)
+
+    def _write_project(self, path: str):
+        from PySide6.QtWidgets import QMessageBox
+        tab = self.tab_manager.current_tab()
+        try:
+            save_project(tab, path)
+            self._project_path  = path
+            self._project_dirty = False
+            self._update_title()
+            self.status_bar.showMessage(f"Saved: {os.path.basename(path)}", 4000)
+        except ProjectIOError as e:
+            QMessageBox.critical(self, "Save Failed", str(e))
+
+    def _do_autosave(self):
+        """Fires every 5 min — silently writes autosave if there are unsaved changes."""
+        if not self._project_dirty:
+            return
+        tab = self.tab_manager.current_tab()
+        autosave(tab)
+
+    def closeEvent(self, event):
+        """Prompt to save before quitting."""
+        if self._confirm_discard():
+            event.accept()
+        else:
+            event.ignore()
+
+    # ── Update checker ────────────────────────────────────────────────────────
+
+    def _check_for_updates(self):
+        """Check GitHub releases/latest in a background daemon thread."""
+        import threading
+
+        def _worker():
+            try:
+                import urllib.request, json as _json
+                url = f"https://api.github.com/repos/Huzzama/Steam-Grunge/releases/latest"
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": f"SteamGrungeEditor/{APP_VERSION}"},
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = _json.loads(resp.read())
+                tag = data.get("tag_name", "").lstrip("v")
+                if tag and tag != APP_VERSION:
+                    QTimer.singleShot(0, lambda t=tag: self._show_update_banner(t))
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _show_update_banner(self, latest_version: str):
+        from PySide6.QtWidgets import QPushButton
+        btn = QPushButton(
+            f"  ↑  Update available: v{latest_version}  —  click to download  "
+        )
+        btn.setStyleSheet("""
+            QPushButton {
+                background: #1a3a1a; color: #88ee88;
+                border: 1px solid #3a6e3a; border-radius: 3px;
+                font-family: 'Courier New'; font-size: 11px; padding: 2px 8px;
+            }
+            QPushButton:hover { background: #224422; color: #aaffaa; }
+        """)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(self._open_release_page)
+        self.status_bar.addPermanentWidget(btn)
+
+    def _open_release_page(self):
+        import webbrowser
+        webbrowser.open(f"https://github.com/Huzzama/Steam-Grunge/releases/latest")
+
     def _report_issue(self):
         """Help → Report Issue — opens GitHub issues page."""
         import webbrowser
-        webbrowser.open("https://github.com/your-repo/steam-grunge-editor/issues")
+        webbrowser.open("https://github.com/Huzzama/Steam-Grunge/issues")
 
     def _show_about(self):
         QMessageBox.about(
             self, "Steam Grunge Editor",
-            "Steam Grunge Editor\n\nCreate distressed Steam artwork.\n\n"
+            f"Steam Grunge Editor  v{APP_VERSION}\n\n"
+            "Create distressed Steam artwork.\n\n"
             "Supports SteamGridDB API for artwork search."
         )
