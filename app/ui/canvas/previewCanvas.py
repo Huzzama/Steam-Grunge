@@ -27,7 +27,7 @@ from PIL import Image as PILImage, ImageFont, ImageDraw
 
 from PySide6.QtWidgets import QWidget, QSizePolicy, QMenu
 from app.ui.smartGuideLines import SmartGuides
-from PySide6.QtCore  import Qt, QRect, QPoint, QSize, Signal
+from PySide6.QtCore import Qt, QPoint, QRect, QSize, QPointF, QRectF , Signal
 from PySide6.QtGui   import (
     QPainter, QPixmap, QColor, QPen, QBrush,
     QFont, QKeyEvent, QMouseEvent, QContextMenuEvent, QAction,
@@ -378,10 +378,27 @@ class PreviewCanvas(QWidget):
         return QPoint(int(p.x() * self._scale + self._ox),
                       int(p.y() * self._scale + self._oy))
 
+    def _c2w_f(self, x: float, y: float) -> "QPointF":
+        """Sub-pixel precision world→widget transform (no int truncation).
+        Used for drawing handles and bounding boxes to eliminate 1-px jitter."""
+        from PySide6.QtCore import QPointF
+        return QPointF(x * self._scale + self._ox,
+                       y * self._scale + self._oy)
+
     def _layer_wrect(self, l: Layer) -> QRect:
         tl = self._c2w(QPoint(l.x,       l.y))
         br = self._c2w(QPoint(l.x + l.w, l.y + l.h))
         return QRect(tl, br)
+
+    def _layer_wrect_f(self, l: Layer) -> "QRectF":
+        """Sub-pixel precision layer bounding rect for drawing and hit-testing.
+        Eliminates the 1-px jitter caused by int() truncation in _layer_wrect."""
+        from PySide6.QtCore import QRectF
+        x1 = l.x       * self._scale + self._ox
+        y1 = l.y       * self._scale + self._oy
+        x2 = (l.x + l.w) * self._scale + self._ox
+        y2 = (l.y + l.h) * self._scale + self._oy
+        return QRectF(x1, y1, x2 - x1, y2 - y1)
 
     # ── rotated handle geometry ────────────────────────────────────────────────
     def _rot_matrix(self, angle_deg: float):
@@ -401,15 +418,17 @@ class PreviewCanvas(QWidget):
         """
         Return 9 QPointF handle centres in widget space, rotated with the layer.
         Indices 0-7 = resize handles, 8 = rotation knob.
-        All points are computed by rotating the un-rotated handle positions
-        around the layer centre — no approximations.
+
+        JITTER FIX: uses _layer_wrect_f (float precision) instead of
+        _layer_wrect (int-truncated) so handle positions don't snap to
+        whole pixels as the layer moves — eliminates 1-px jitter.
         """
         from PySide6.QtCore import QPointF
         import math
 
-        wr   = self._layer_wrect(l)
-        cx   = (wr.left()  + wr.right())  / 2.0
-        cy   = (wr.top()   + wr.bottom()) / 2.0
+        wr   = self._layer_wrect_f(l)      # <-- float rect, no truncation
+        cx   = wr.left()  + wr.width()  / 2.0
+        cy   = wr.top()   + wr.height() / 2.0
         rot  = l.rotation if hasattr(l, 'rotation') else 0.0
         rad  = math.radians(rot)
         cos_a = math.cos(rad)
@@ -421,10 +440,10 @@ class PreviewCanvas(QWidget):
             return QPointF(cx + dx*cos_a - dy*sin_a,
                            cy + dx*sin_a + dy*cos_a)
 
-        l_  = float(wr.left())
-        r_  = float(wr.right())
-        t_  = float(wr.top())
-        b_  = float(wr.bottom())
+        l_  = wr.left()
+        r_  = wr.right()
+        t_  = wr.top()
+        b_  = wr.bottom()
         mx  = cx          # mid-x
         my  = cy          # mid-y
 
@@ -1153,11 +1172,13 @@ class PreviewCanvas(QWidget):
         p.setOpacity(1.0)
 
         if selected:
-            from PySide6.QtCore import QPointF
+            from PySide6.QtCore import QPointF, QRectF
             import math as _math
-            wr_rect  = self._layer_wrect(l)
-            cx_f = (wr_rect.left()  + wr_rect.right())  / 2.0
-            cy_f = (wr_rect.top()   + wr_rect.bottom()) / 2.0
+            # JITTER FIX: use float-precision rect so the bounding box and all
+            # handles are positioned at sub-pixel accuracy — no 1-px snap/jump.
+            wr_rect  = self._layer_wrect_f(l)
+            cx_f = wr_rect.left() + wr_rect.width()  / 2.0
+            cy_f = wr_rect.top()  + wr_rect.height() / 2.0
             rot  = l.rotation if hasattr(l, 'rotation') else 0.0
             rad  = _math.radians(rot)
             cos_r = _math.cos(rad)
@@ -1200,9 +1221,11 @@ class PreviewCanvas(QWidget):
                 p.setPen(QPen(QColor(255, 255, 255), 1))
                 p.setBrush(QBrush(QColor(80, 160, 255) if is_corner
                                   else QColor(20, 40, 80, 200)))
-                hr = QRect(int(pt.x()) - HANDLE_HALF,
-                           int(pt.y()) - HANDLE_HALF,
-                           H, H)
+                # JITTER FIX: QRectF keeps sub-pixel position — int() would
+                # re-introduce the truncation jitter we just eliminated above.
+                hr = QRectF(pt.x() - HANDLE_HALF,
+                            pt.y() - HANDLE_HALF,
+                            H, H)
                 p.drawRect(hr)
 
             # Rotation knob — cyan circle at stem tip (local: top-centre minus STEM)

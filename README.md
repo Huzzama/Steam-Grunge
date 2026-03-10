@@ -44,6 +44,8 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 - 🖌️ **Custom brush engine** — import `.gbr`, `.png`, `.zip` brush packs with full pressure controls
 - 🔤 **Font importer** — add `.ttf` / `.otf` fonts available in the text layer tool
 - 🗂️ **Tab system** — work on multiple games at once, each tab has its own independent state
+- 💼 **Project save/load** — save your full canvas and layer stack as a `.sgeproj` file; auto-saves every 5 minutes
+- 🔔 **Auto update checker** — notified at launch when a new version is available on GitHub
 - 🌑 **Dark terminal aesthetic** — monospace UI designed for the Steam grunge look
 
 ---
@@ -91,7 +93,7 @@ chmod +x Steam_Grunge_Editor-x86_64.AppImage
 Download the latest `.deb` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
 
 ```bash
-sudo dpkg -i steam-grunge-editor_1.0.0_all.deb
+sudo dpkg -i steam-grunge-editor_2.0.0_all.deb
 sudo apt-get install -f
 ```
 
@@ -131,7 +133,7 @@ python app/main.py
 3. Click **Generate API Key** and copy it
 4. In the app, open the search panel and paste your key when prompted
 
-Your key is stored locally and never shared.
+Your key is stored locally between sessions and never shared.
 
 ---
 
@@ -162,6 +164,20 @@ Exported files follow Steam's naming convention automatically:
 
 ---
 
+## Project Files (.sgeproj)
+
+Projects are saved as `.sgeproj` files — a ZIP archive containing all layer data and
+canvas settings. This lets you close and reopen a work-in-progress without losing anything.
+
+- **File → New Project** (`Ctrl+N`) — start fresh (prompts to save if unsaved changes exist)
+- **File → Open Project…** (`Ctrl+O`) — open a `.sgeproj` file
+- **File → Save Project** (`Ctrl+S`) — save in place
+- **File → Save Project As…** (`Ctrl+Shift+S`) — save to a new location
+- The title bar shows a `•` when there are unsaved changes
+- Auto-save runs every 5 minutes to `DATA_DIR/autosave/`
+
+---
+
 ## Project Structure
 
 ```
@@ -182,7 +198,7 @@ Steam-Grunge/
 │   │   └── icon.png              <- app icon
 │   ├── editor/                   <- compositor, exports, templates
 │   ├── filters/                  <- color, film grain, VHS, distress
-│   ├── services/                 <- SteamGridDB API, Steam sync, export flow
+│   ├── services/                 <- SteamGridDB API, Steam sync, export flow, projectIO
 │   ├── ui/
 │   │   ├── canvas/               <- canvas engine (layers, fx, tools, handles)
 │   │   └── ...                   <- panels, dialogs, widgets
@@ -210,7 +226,10 @@ Steam-Grunge/
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+O` | Open image |
+| `Ctrl+N` | New project |
+| `Ctrl+O` | Open project |
+| `Ctrl+S` | Save project |
+| `Ctrl+Shift+S` | Save project as… |
 | `Ctrl+Shift+O` | Import image as layer |
 | `Ctrl+E` | Export artwork |
 | `Ctrl+Shift+E` | Export all assets |
@@ -221,7 +240,6 @@ Steam-Grunge/
 | `Ctrl+Shift+C` | Crop layer |
 | `B` | Toggle brush panel |
 | `E` | Eraser tool |
-| `Ctrl+Shift+S` | Sync to Steam |
 | `Ctrl+T` | New tab |
 | `Ctrl+W` | Close tab |
 

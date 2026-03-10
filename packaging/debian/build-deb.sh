@@ -10,7 +10,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-VERSION=$(cat "$REPO_ROOT/VERSION" 2>/dev/null || echo "1.0.0")
+VERSION=$(cat "$REPO_ROOT/VERSION" 2>/dev/null || echo "2.0.0")
 PKG="steam-grunge-editor"
 PKGDIR="$SCRIPT_DIR/${PKG}_${VERSION}"
 

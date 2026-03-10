@@ -1406,12 +1406,15 @@ class EditorPanel(QWidget):
     def _on_grain(self, v: float):
         state.film_grain = v
         self._update_canvas_effects()
-        self.settings_changed.emit()
+        # PERF: do NOT emit settings_changed here — grain is a canvas-only
+        # post-processing effect handled by previewCanvas._draw_with_global_fx.
+        # Emitting settings_changed would trigger compositor.compose() which
+        # runs a second full PIL render with no visual benefit for grain changes.
 
     def _on_ca(self, v: float):
         state.chromatic_aberration = v
         self._update_canvas_effects()
-        self.settings_changed.emit()
+        # PERF: same as _on_grain — CA is canvas-only, compositor doesn't use it.
 
     def _update_canvas_effects(self):
         if hasattr(self, '_canvas'):

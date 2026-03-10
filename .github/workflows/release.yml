@@ -64,6 +64,19 @@ jobs:
 
             Create distressed, grunge-style custom artwork for your Steam library.
 
+            ### What's new in v2.0.0
+
+            - 💼 **Project save/load** — `.sgeproj` format (full layer stack + AppState, atomic write, autosave every 5 min)
+            - 🔔 **Auto update checker** — notified at launch when a new version is available
+            - 🖼️ **Film grain now respects per-layer adjustments** — brightness, contrast, tint, saturation all survive grain being turned up
+            - ⚡ **Major performance overhaul** — slider drag no longer freezes canvas; 25%-res preview during drag, cached FX during interaction, vectorised NumPy grain
+            - 🖱️ **Bounding box handle jitter fixed** — sub-pixel `QPointF`/`QRectF` transforms replace `int()` truncation
+            - 🔑 **API key persisted between sessions** — stored in `settings.json`, loaded automatically on launch
+            - 🖼️ **SteamGridDB 401 / broken thumbnails fixed** — CDN URLs no longer send Bearer auth; validity checked via `QPixmap.loadFromData()`
+            - 🐛 **Bounding box no longer lost after combo/wheel scroll** — `wheelEvent`/`focusOutEvent` guards added
+
+            See [CHANGELOG.md](https://github.com/Huzzama/Steam-Grunge/blob/main/CHANGELOG.md) for full details.
+
             ### Downloads
 
             | File | Platform |

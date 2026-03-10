@@ -17,7 +17,8 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, '..', '..'))
 added_files = [
     # Assets folder — textures, brushes, fonts, templates, icons, ratings
     (os.path.join(ROOT, 'app', 'assets'),       'app/assets'),
-    # Config and state modules need to be importable
+    # VERSION file — read at runtime by mainWindow.py for APP_VERSION
+    (os.path.join(ROOT, 'VERSION'),             '.'),
 ]
 
 # Collect PySide6 data files (translations, plugins)

@@ -1,6 +1,6 @@
 pkgbase = steam-grunge-editor
 	pkgdesc = Grunge-style Steam artwork editor for your Steam library
-	pkgver = 1.0.0
+	pkgver = 2.0.0
 	pkgrel = 1
 	url = https://github.com/Huzzama/Steam-Grunge
 	arch = any
