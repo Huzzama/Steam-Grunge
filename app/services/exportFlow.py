@@ -1,6 +1,4 @@
 """
-app/services/exportFlow.py
-
 Central export entry point used by ALL export paths:
   - Editor panel "Export Image" button
   - File → Export menu
@@ -8,11 +6,14 @@ Central export entry point used by ALL export paths:
 
 Flow
 ----
-1. Check if tab.state already has a confirmed_app_id for the current game.
-2. If not (or if game changed), show AppIdConfirmDialog.
-3. On confirm, cache app_id + canonical name in tab.state.
-4. Export canvas to file using correct Steam filename convention.
-5. Return the saved path (caller can then open Sync dialog if desired).
+1. Resolve confirmed AppID — in order:
+     a. state.confirmed_app_id  (set by prior confirmation or restored from .sgeproj)
+     b. AppIdRegistry persistent cache
+     c. AppIdConfirmDialog (user search + confirm)
+2. Compose canvas to PIL image.
+3. Build Steam filename from AppID + template.
+4. Save file.
+5. Return saved path (caller can open Sync dialog if desired).
 
 If the user cancels the confirm dialog, export is aborted (returns None).
 """
@@ -98,34 +99,49 @@ def run_export_flow(tab: "WorkspaceTab", parent_widget=None) -> Optional[str]:
 def _get_or_confirm_app_id(tab: "WorkspaceTab", parent_widget) -> Optional[int]:
     """
     Return the confirmed AppID for this tab's current game.
-    Shows the confirmation dialog if:
-      - No AppID has been confirmed yet, OR
-      - The game has changed since last confirmation.
+
+    Resolution order:
+      1. state.confirmed_app_id  — set from a previous confirmation OR restored
+                                   from a saved project.  Trusted immediately;
+                                   no name comparison required.
+      2. AppIdRegistry           — persistent disk cache from prior sessions.
+      3. AppIdConfirmDialog      — ask the user (network search + manual entry).
+
+    This means: load a project → export → no dialog, even if the visible
+    game name was changed or is empty.
     """
     from PySide6.QtWidgets import QDialog
+    from app.services.appIdRegistry import AppIdRegistry
     state = tab.state
 
-    # Cache is valid if confirmed_app_id exists AND game name hasn't changed
-    current_name = (state.selected_game_name or "").strip().lower()
-    cached_name  = (state.confirmed_app_name or "").strip().lower()
+    # ── 1. Trust any confirmed ID already on the state object ─────────────
+    # This covers:
+    #   a) confirmed earlier in this session
+    #   b) restored from a saved .sgeproj by projectIO.load_project()
+    confirmed_id = getattr(state, "confirmed_app_id", None)
+    if confirmed_id is not None:
+        return confirmed_id
 
-    if state.confirmed_app_id is not None and current_name == cached_name and current_name:
-        return state.confirmed_app_id
+    # ── 2. Persistent registry lookup (cross-session cache) ───────────────
+    game_name = (state.selected_game_name or "").strip()
+    registry  = AppIdRegistry.shared()
+    if game_name:
+        cached_id = registry.lookup(game_name)
+        if cached_id is not None:
+            state.confirmed_app_id   = cached_id
+            state.confirmed_app_name = registry.lookup_canonical(game_name) or game_name
+            return cached_id
 
-    # Need to (re-)confirm
-    game_name = state.selected_game_name or ""
-    if not game_name:
-        # No game loaded — ask user to search manually with empty dialog
-        game_name = ""
-
+    # ── 3. Dialog — ask the user ───────────────────────────────────────────
     from app.ui.appIdConfirmDialog import AppIdConfirmDialog
     dlg = AppIdConfirmDialog(game_name=game_name, parent=parent_widget)
     if dlg.exec() != QDialog.Accepted:
         return None   # user cancelled
 
-    # Cache result in tab state
+    # Cache result in tab state AND registry for future sessions
     state.confirmed_app_id   = dlg.result_app_id
     state.confirmed_app_name = dlg.result_name
+    registry.register(dlg.result_name, dlg.result_app_id, canonical=dlg.result_name)
     return state.confirmed_app_id
 
 

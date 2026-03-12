@@ -16,7 +16,6 @@ from app.ui.brushPanel import BrushPanel
 from app.ui.floatingContextTb import FloatingContextTb
 from app.ui.tabManager import TabManager
 from app.state import state
-from app.editor import compositor
 from app.editor import exports as exporter
 
 # Read version from the VERSION file at project root
@@ -976,8 +975,9 @@ class MainWindow(QMainWindow):
                 "color:#664444; font-family:'Courier New'; font-size:11px;"
                 " padding:2px 8px; margin-right:8px;"
             )
-        if hasattr(self, 'preview_canvas'):
-            self.preview_canvas.reset_pan()
+        # NOTE: do NOT call reset_pan() here.
+        # This method fires on a 3-second repeating timer; calling reset_pan()
+        # was silently discarding the user's pan position every 3 seconds.
 
     def _rotate_canvas(self, delta: float):
         """Rotate the canvas view by delta degrees."""
@@ -1675,11 +1675,8 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         tab = self.tab_manager.current_tab()
-        tab.preview_canvas._layers.clear()
-        tab.preview_canvas._sel = -1
-        tab.preview_canvas._fx_cache = None
-        tab.preview_canvas._history.clear()
-        tab.preview_canvas._redo_stack.clear()
+        # Use public canvas API — never mutate _layers/_sel/_history directly
+        tab.preview_canvas.clear_canvas()
         from app.state import AppState
         tab.state.__dict__.update(AppState().__dict__)
         tab.editor_panel.refresh_from_state()

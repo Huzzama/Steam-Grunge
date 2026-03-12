@@ -1,108 +1,67 @@
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
-from PIL import Image
+"""
+app/state.py  —  Per-tab document state for Steam Grunge Editor.
+
+Each WorkspaceTab owns one AppState instance.
+This is the declarative authority for document-level settings.
+
+PreviewCanvas owns runtime/interactive state (layers, transforms, selection).
+WorkspaceTab._do_compose() bridges AppState → PreviewCanvas each tick.
+"""
+from __future__ import annotations
+from typing import Optional, Tuple
+from PIL import Image as PILImage
 
 
-@dataclass
 class AppState:
-    # Search state
-    search_query: str = ""
-    search_results: List[Dict] = field(default_factory=list)
+    """All document-level settings for one tab.  No Qt objects, no signals."""
 
-    # Selection state
-    selected_game_id: Optional[int] = None
-    selected_game_name: str = ""
-    selected_artwork_url: Optional[str] = None
-    base_image: Optional[Image.Image] = None
+    def __init__(self):
+        # ── Game / project identity ───────────────────────────────────────
+        self.selected_game_name: str            = ""
+        self.base_image:         Optional[PILImage.Image] = None
 
-    # Template state
-    current_template: str = "cover"  # "cover" | "vhs_cover" | "wide" | "hero" | "logo" | "icon"
+        # Confirmed Steam identity — persisted in .sgeproj.
+        # confirmed_app_id is the PRIMARY export authority once set.
+        # confirmed_app_name is informational only (not used as a gate).
+        self.confirmed_app_id:   Optional[int]  = None
+        self.confirmed_app_name: str            = ""
 
-    # Cover layout options
-    show_platform_bar: bool = True
-    platform_bar_name: str = "none"
-    show_spine: bool = True
-    spine_text: str = ""
+        # ── Canvas / template ─────────────────────────────────────────────
+        self.current_template: str              = "cover"
+        self.bg_color:         Tuple[int,...]   = (0, 0, 0)
 
-    # Filter values (0-100)
-    film_grain: float = 20.0
-    chromatic_aberration: float = 10.0
-    scratches: float = 30.0
-    dust: float = 20.0
-    edge_wear: float = 25.0
-    vhs_scanlines: float = 0.0
+        # ── Global filter values ──────────────────────────────────────────
+        self.film_grain:            float = 20.0
+        self.chromatic_aberration:  float = 10.0
+        self.scratches:             float = 30.0
+        self.dust:                  float = 20.0
+        self.edge_wear:             float = 25.0
+        self.vhs_scanlines:         float = 0.0
+        self.brightness:            float = 50.0
+        self.contrast:              float = 50.0
+        self.saturation:            float = 50.0
+        self.tint_color:            Optional[Tuple[int,...]] = None
+        self.deterioration_preset:  str   = "none"
 
-    # Color adjustments
-    brightness: float = 50.0
-    contrast: float = 50.0
-    saturation: float = 50.0
-    tint_color: Optional[tuple] = None
+        # ── Platform bar / spine ──────────────────────────────────────────
+        self.show_platform_bar: bool = True
+        self.platform_bar_name: str  = "none"
+        self.show_spine:        bool = True
+        self.spine_text:        str  = ""
 
-    # Deterioration preset
-    deterioration_preset: str = "none"
+        # ── Export paths (ephemeral, not persisted) ───────────────────────
+        # Maps template key → absolute path of the most recently exported PNG.
+        # Written by mainWindow after each successful export so the Sync
+        # dialog can find the file without re-exporting.
+        # Default is an empty dict; keys are added on demand.
+        self.export_paths: dict = {}
 
-    # Layers
-    layers: List[Dict[str, Any]] = field(default_factory=list)
-
-    # Background color (RGB tuple)
-    bg_color: tuple = (0, 0, 0)
-
-    # Composed output
-    composed_image: Optional[Image.Image] = None
-
-    # ── Export paths ───────────────────────────────────────────────────────────
-    # Tracks the most recently exported file per template key.
-    # Set by _export() in mainWindow so Sync always uses the exact
-    # file the user just exported, not some old file from the exports folder.
-    # e.g. {"cover": "/path/to/Helltaker_cover_20260309_130000.png",
-    #        "wide":  "/path/to/Helltaker_wide_20260309_130001.png"}
-    export_paths: Dict[str, str] = field(default_factory=dict)
-
-    def reset_filters(self):
-        self.film_grain = 20.0
-        self.chromatic_aberration = 10.0
-        self.scratches = 30.0
-        self.dust = 20.0
-        self.edge_wear = 25.0
-        self.vhs_scanlines = 0.0
-        self.brightness = 50.0
-        self.contrast = 50.0
-        self.saturation = 50.0
-
-    def to_dict(self) -> dict:
-        return {
-            "template": self.current_template,
-            "platform_bar": self.platform_bar_name,
-            "show_spine": self.show_spine,
-            "spine_text": self.spine_text,
-            "film_grain": self.film_grain,
-            "chromatic_aberration": self.chromatic_aberration,
-            "scratches": self.scratches,
-            "dust": self.dust,
-            "edge_wear": self.edge_wear,
-            "vhs_scanlines": self.vhs_scanlines,
-            "brightness": self.brightness,
-            "contrast": self.contrast,
-            "saturation": self.saturation,
-            "deterioration_preset": self.deterioration_preset,
-        }
-
-    def from_dict(self, data: dict):
-        self.current_template = data.get("template", "cover")
-        self.platform_bar_name = data.get("platform_bar", "none")
-        self.show_spine = data.get("show_spine", True)
-        self.spine_text = data.get("spine_text", "")
-        self.film_grain = data.get("film_grain", 20.0)
-        self.chromatic_aberration = data.get("chromatic_aberration", 10.0)
-        self.scratches = data.get("scratches", 30.0)
-        self.dust = data.get("dust", 20.0)
-        self.edge_wear = data.get("edge_wear", 25.0)
-        self.vhs_scanlines = data.get("vhs_scanlines", 0.0)
-        self.brightness = data.get("brightness", 50.0)
-        self.contrast = data.get("contrast", 50.0)
-        self.saturation = data.get("saturation", 50.0)
-        self.deterioration_preset = data.get("deterioration_preset", "none")
+        # ── Font / brush selection (ephemeral, not persisted) ─────────────
+        self.font_selected: str = ""
 
 
-# Singleton global state
+# ── Module-level singleton ────────────────────────────────────────────────────
+# Kept for backward compatibility with any code that does:
+#   from app.state import state
+# New code should use per-tab AppState instances (tab.state) instead.
 state = AppState()

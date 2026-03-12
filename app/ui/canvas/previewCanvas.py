@@ -1,161 +1,46 @@
 """
-previewCanvas.py  —  Interactive canvas editor.
-Layers support drag, resize (8 handles), delete, right-click menu.
-BUG FIX: _scale/_offset are computed eagerly, not only inside paintEvent.
+previewCanvas.py  —  Interactive canvas editor widget.
+
+Layer class lives in app.ui.canvas.layers — do NOT redefine it here.
 
 Tool-mode system:
-  Canvas._tool controls all mouse behaviour.  Set via set_tool(ToolMode).
-  ToolMode is imported from app.ui.toolBar (no circular deps because toolBar
-  only imports PySide6 + stdlib).
-
-  MOVE         — existing drag/resize/rotate behaviour (default)
-  BRUSH        — paint dabs onto active paint layer
-  ERASER       — erase dabs from active paint layer
-  RECTANGLE    — drag to draw new fill rect layer
-  ELLIPSE      — drag to draw new fill ellipse layer
-  COLOR_PICKER — click to sample canvas pixel → color_picked signal
-  HAND         — drag to pan (same as MMB)
-  ZOOM         — click to zoom in; Shift/RMB = zoom out
+  MOVE / BRUSH / ERASER / RECTANGLE / ELLIPSE / COLOR_PICKER / HAND / ZOOM
 """
 from __future__ import annotations
 import os, io
-from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
 
 import numpy as np
 from PIL import Image as PILImage, ImageFont, ImageDraw
 
 from PySide6.QtWidgets import QWidget, QSizePolicy, QMenu
-from app.ui.smartGuideLines import SmartGuides
-from PySide6.QtCore import Qt, QPoint, QRect, QSize, QPointF, QRectF , Signal
-from PySide6.QtGui   import (
+from PySide6.QtCore    import Qt, QPoint, QRect, QSize, QPointF, QRectF, Signal
+from PySide6.QtGui     import (
     QPainter, QPixmap, QColor, QPen, QBrush,
     QFont, QKeyEvent, QMouseEvent, QContextMenuEvent, QAction,
     QFontDatabase,
 )
-from app.config import COVER_SIZE, WIDE_SIZE, FONTS_DIR, TEMPLATES_DIR
+from app.config           import COVER_SIZE, WIDE_SIZE, FONTS_DIR, TEMPLATES_DIR
+from app.ui.smartGuideLines import SmartGuides
 
-# ── QPixmap → PIL helper (no BytesIO/QImage.save needed) ──────────────────────
+# Canonical Layer definition — single source of truth
+from app.ui.canvas.layers import Layer
+
+# ── QPixmap → PIL helper ───────────────────────────────────────────────────────
 def _qpixmap_to_pil(pix: QPixmap):
-    """Convert a QPixmap to a PIL Image using numpy — no file I/O required."""
+    """Convert a QPixmap to a PIL Image via numpy — no file I/O required."""
     from PySide6.QtGui import QImage
     img = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
     w, h = img.width(), img.height()
     ptr = img.bits()
     arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4)).copy()
     from PIL import Image as _PIL
-    return _PIL.fromarray(arr, "RGBA")
+    return _PIL.fromarray(arr, 'RGBA')
 
 
 HANDLE_SIZE = 12
 HANDLE_HALF = HANDLE_SIZE // 2
 MIN_SIZE    = 20
-
-
-# ── Layer ──────────────────────────────────────────────────────────────────────
-@dataclass
-class Layer:
-    """
-    Unified layer dataclass.
-    kind: "paint" | "group" | "clone" | "vector" | "filter" | "fill" |
-          "file" | "mask_transparency" | "mask_filter" | "mask_colorize" |
-          "mask_transform" | "mask_selection" | "image" | "texture" | "text"
-    (image/texture/text kept for back-compat)
-    """
-    kind:        str                            # see above
-    name:        str   = "Layer"
-    visible:     bool  = True
-    locked:      bool  = False
-    x:           int   = 0
-    y:           int   = 0
-    w:           int   = 200
-    h:           int   = 200
-
-    # ── Image / paint / file / texture ──────────────────────────────────────
-    pil_image:   Optional[PILImage.Image] = None
-    source_path: str   = ""
-    rotation:    float = 0.0        # degrees
-    flip_h:      bool  = False
-    flip_v:      bool  = False
-    blend_mode:  str   = "normal"
-    crop_l:      int   = 0
-    crop_t:      int   = 0
-    crop_r:      int   = 0
-    crop_b:      int   = 0
-
-    # ── Text ────────────────────────────────────────────────────────────────
-    text:              str   = ""
-    font_name:         str   = "default"
-    font_size:         int   = 48
-    font_color:        Tuple[int,int,int] = (255, 255, 255)
-    font_bold:         bool  = False
-    font_italic:       bool  = False
-    font_uppercase:    bool  = False
-    text_align:        str   = "left"
-    letter_spacing:    int   = 0
-    text_orientation:  str   = "horizontal"
-    outline_size:      int   = 0
-    outline_color:     Tuple[int,int,int] = (0, 0, 0)
-    shadow_offset:     int   = 0
-    shadow_color:      Tuple[int,int,int] = (0, 0, 0)
-
-    # ── Shared color adjustments ─────────────────────────────────────────────
-    opacity:        float = 1.0
-    brightness:     float = 50.0
-    contrast:       float = 50.0
-    saturation:     float = 50.0
-    tint_color:     Optional[Tuple[int,int,int]] = None
-    tint_strength:  float = 0.0
-
-    # ── Group layer ─────────────────────────────────────────────────────────
-    group_collapsed: bool = False            # True = children hidden in panel
-    children:        List[int] = field(default_factory=list)  # indices into canvas.layers
-
-    # ── Clone layer ─────────────────────────────────────────────────────────
-    clone_source_idx: int = -1               # index of the source layer to mirror
-
-    # ── Vector layer ────────────────────────────────────────────────────────
-    vector_paths:    List[dict] = field(default_factory=list)  # future SVG path data
-    vector_stroke:   Tuple[int,int,int] = (255, 255, 255)
-    vector_fill:     Tuple[int,int,int] = (255, 255, 255)
-    vector_stroke_w: float = 2.0
-
-    # ── Filter layer ────────────────────────────────────────────────────────
-    filter_type:     str   = ""      # "brightness_contrast" | "hue_saturation" | "invert" | etc.
-    filter_params:   dict  = field(default_factory=dict)
-
-    # ── Fill layer ──────────────────────────────────────────────────────────
-    fill_type:       str   = "solid"  # "solid" | "gradient" | "pattern"
-    fill_color:      Tuple[int,int,int] = (0, 0, 0)
-    fill_color2:     Tuple[int,int,int] = (255, 255, 255)  # gradient end color
-    fill_angle:      float = 0.0      # gradient angle
-
-    # ── Mask layers ─────────────────────────────────────────────────────────
-    mask_target_idx: int   = -1       # which layer this mask applies to
-    mask_mode:       str   = "alpha"  # "alpha" | "filter" | "colorize" | "transform" | "selection"
-    mask_color:      Tuple[int,int,int] = (255, 255, 255)
-    mask_feather:    float = 0.0      # blur radius for mask edge
-
-    # ── Transform mask ─────────────────────────────────────────────────────
-    transform_scale_x: float = 1.0
-    transform_scale_y: float = 1.0
-    transform_rotate:  float = 0.0
-    transform_tx:      int   = 0
-    transform_ty:      int   = 0
-
-    _pix:        Optional[QPixmap] = field(default=None, repr=False, compare=False)
-
-    def invalidate(self): self._pix = None
-
-    @property
-    def rect(self): return QRect(self.x, self.y, self.w, self.h)
-
-    # Convenience: does this layer render like an image?
-    @property
-    def is_image_like(self) -> bool:
-        return self.kind in ("paint", "image", "texture", "file", "fill",
-                             "mask_transparency", "mask_colorize", "mask_selection")
-
 
 # ── Canvas ─────────────────────────────────────────────────────────────────────
 class PreviewCanvas(QWidget):
@@ -532,23 +417,46 @@ class PreviewCanvas(QWidget):
         return -1
 
     # ── public API ─────────────────────────────────────────────────────────────
+    def doc_size(self) -> QSize:
+        """Return the current document size (width × height) as a QSize."""
+        return QSize(self._doc_size)
+
+    def template_key(self) -> str:
+        """Return the current template identifier (e.g. 'cover', 'wide', 'hero').
+
+        Use this instead of reading canvas._template externally.
+        AppState is the declarative owner of the desired template key;
+        this accessor reflects what the canvas was last told to render.
+        """
+        return self._template
+
     def set_template(self, tpl: str):
-        self._template = tpl
         from app.config import COVER_SIZE, WIDE_SIZE, VHS_COVER_SIZE, HERO_SIZE, LOGO_SIZE, ICON_SIZE
         size_map = {
-            "cover":       COVER_SIZE,
-            "vhs_cover":   VHS_COVER_SIZE,
-            "wide":        WIDE_SIZE,
-            "vhs_pile":    WIDE_SIZE,     # pile_of_vhs_template_wide.png
-            "vhs_cassette": WIDE_SIZE,    # vhs_cassette_template_wide.png
-            "hero":        HERO_SIZE,
-            "logo":        LOGO_SIZE,
-            "icon":        ICON_SIZE,
+            "cover":        COVER_SIZE,
+            "vhs_cover":    VHS_COVER_SIZE,
+            "wide":         WIDE_SIZE,
+            "vhs_pile":     WIDE_SIZE,
+            "vhs_cassette": WIDE_SIZE,
+            "hero":         HERO_SIZE,
+            "logo":         LOGO_SIZE,
+            "icon":         ICON_SIZE,
         }
-        self._transparent_bg = tpl in {"logo", "icon"}
-        self._doc_size = QSize(*size_map.get(tpl, COVER_SIZE))
+        new_size        = QSize(*size_map.get(tpl, COVER_SIZE))
+        new_transparent = tpl in {"logo", "icon"}
+
+        # Only reset pan/zoom when the doc canvas size actually changes.
+        # Skipping this reset on same-size template changes preserves the
+        # user's current view position when effects, colours, or unrelated
+        # tab-state changes trigger a schedule_compose().
+        if new_size != self._doc_size:
+            self._pan_offset = QPoint(0, 0)
+
+        self._template       = tpl
+        self._transparent_bg = new_transparent
+        self._doc_size       = new_size
         self._load_template_pix(tpl)
-        self._bg_pix = None
+        self._bg_pix         = None
         self._update_viewport()
         self.update()
 
@@ -580,11 +488,14 @@ class PreviewCanvas(QWidget):
         self.update()
 
     def set_background(self, pil: PILImage.Image):
-        """Set filter-composed background overlay."""
-        buf = io.BytesIO()
-        pil.save(buf, "PNG"); buf.seek(0)
-        pix = QPixmap(); pix.loadFromData(buf.read())
-        self._bg_pix = pix
+        """Set filter-composed background overlay (PIL → QPixmap, no PNG round-trip)."""
+        import numpy as np
+        from PySide6.QtGui import QImage
+        arr = np.ascontiguousarray(np.array(pil.convert("RGBA"), dtype=np.uint8))
+        h, w = arr.shape[:2]
+        qi = QImage(arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
+        self._bg_pix = QPixmap.fromImage(qi)
+        self._fx_cache = None   # bg changed → invalidate FX composite
         self.update()
 
     # backward compat
@@ -597,6 +508,9 @@ class PreviewCanvas(QWidget):
         self._push_history()
         self._layers.append(layer)
         self._sel = len(self._layers) - 1
+        # Invalidate FX composite cache — layer stack changed
+        self._fx_cache = None
+        self._effects_pix = None
         self.layer_selected.emit(self._sel)
         self.layers_changed.emit()
         self.update()
@@ -629,6 +543,9 @@ class PreviewCanvas(QWidget):
             self._push_history()
             self._layers.pop(idx)
             self._sel = min(self._sel, len(self._layers)-1)
+            # Invalidate FX composite cache — layer stack changed
+            self._fx_cache = None
+            self._effects_pix = None
             self.layers_changed.emit(); self.update()
 
     def move_layer_up(self, idx: int):
@@ -636,6 +553,8 @@ class PreviewCanvas(QWidget):
             self._push_history()
             self._layers[idx], self._layers[idx+1] = self._layers[idx+1], self._layers[idx]
             self._sel = idx+1
+            self._fx_cache = None
+            self._effects_pix = None
             self.layers_changed.emit(); self.update()
 
     def move_layer_down(self, idx: int):
@@ -643,10 +562,129 @@ class PreviewCanvas(QWidget):
             self._push_history()
             self._layers[idx], self._layers[idx-1] = self._layers[idx-1], self._layers[idx]
             self._sel = idx-1
+            self._fx_cache = None
+            self._effects_pix = None
             self.layers_changed.emit(); self.update()
+
+    # ── Clean public authority API ─────────────────────────────────────────
+    # All UI code must call these methods. Direct mutation of _sel, _layers,
+    # or any other hidden canvas field from outside is a bug.
+
+    def select_layer(self, canvas_idx: int):
+        """Select a layer by canvas index. Emits layer_selected + repaints."""
+        self._sel = max(-1, min(canvas_idx, len(self._layers) - 1))
+        self.layer_selected.emit(self._sel)
+        self.update()
+
+    def set_layer_visibility(self, canvas_idx: int, visible: bool):
+        """Toggle layer visibility. Does not push undo (non-destructive)."""
+        if 0 <= canvas_idx < len(self._layers):
+            self._layers[canvas_idx].visible = visible
+            self._fx_cache = None
+            self.layers_changed.emit()
+            self.update()
+
+    def set_layer_locked(self, canvas_idx: int, locked: bool):
+        """Set layer locked state."""
+        if 0 <= canvas_idx < len(self._layers):
+            self._layers[canvas_idx].locked = locked
+            self.layers_changed.emit()
+
+    def reorder_layers(self, new_layer_list: list):
+        """
+        Replace the layer stack with a reordered list of the SAME Layer
+        objects. Tracks the currently selected Layer object and re-finds its
+        position in the new order.  Pushes undo, emits layers_changed.
+        """
+        if len(new_layer_list) != len(self._layers):
+            return  # safety guard against count mismatches
+        sel_obj = (self._layers[self._sel]
+                   if 0 <= self._sel < len(self._layers) else None)
+        self._push_history()
+        self._layers = new_layer_list
+        if sel_obj is not None:
+            try:
+                self._sel = self._layers.index(sel_obj)
+            except ValueError:
+                self._sel = max(0, len(self._layers) - 1)
+        self._fx_cache = None
+        self._effects_pix = None
+        self.layers_changed.emit()
+        self.update()
+
+    def clear_canvas(self):
+        """
+        Reset canvas to empty state (new document / discard all layers).
+        Clears undo history and FX cache. Does NOT reset pan — caller may
+        call reset_pan() separately if desired.
+        """
+        self._layers.clear()
+        self._sel = -1
+        self._fx_cache = None
+        self._effects_pix = None
+        self._history.clear()
+        self._redo_stack.clear()
+        self._push_history()
+        self.layers_changed.emit()
+        self.layer_selected.emit(-1)
+        self.update()
+
+    def duplicate_selected_layer(self, offset: int = 20):
+        """
+        Duplicate the selected layer using the safe clone_for_duplicate() path.
+        Selects the new layer after insertion. Returns the new Layer or None.
+        """
+        layer = self.selected_layer()
+        if layer is None:
+            return None
+        new_layer = layer.clone_for_duplicate(offset=offset)
+        self._push_history()
+        self._layers.append(new_layer)
+        self._sel = len(self._layers) - 1
+        self._fx_cache = None
+        self._effects_pix = None
+        self.layer_selected.emit(self._sel)
+        self.layers_changed.emit()
+        self.update()
+        return new_layer
+
+    # ── Shared per-layer colour-adjustment helper ──────────────────────────
+    # Used by _get_pix (QPixmap path), _draw_with_global_fx (FX composite),
+    # and compose_to_pil (export) so all three code-paths produce identical
+    # colour-adjusted results.
+
+    @staticmethod
+    def _apply_layer_adjustments(img, layer) -> "PILImage.Image":
+        """Apply brightness/contrast/saturation/tint to a PIL RGBA image."""
+        from PIL import ImageEnhance as _IE
+        img = img.copy().convert("RGBA")
+        if layer.brightness != 50 or layer.contrast != 50 or layer.saturation != 50:
+            rgb = img.convert("RGB")
+            if layer.brightness != 50:
+                rgb = _IE.Brightness(rgb).enhance(layer.brightness / 50.0)
+            if layer.contrast != 50:
+                rgb = _IE.Contrast(rgb).enhance(layer.contrast / 50.0)
+            if layer.saturation != 50:
+                rgb = _IE.Color(rgb).enhance(layer.saturation / 50.0)
+            r2, g2, b2 = rgb.split()
+            _, _, _, a2 = img.split()
+            from PIL import Image as _P
+            img = _P.merge("RGBA", (r2, g2, b2, a2))
+        if layer.tint_color and layer.tint_strength > 0:
+            tr, tg, tb = layer.tint_color
+            from PIL import Image as _P
+            tint = _P.new("RGBA", img.size,
+                          (tr, tg, tb, int(255 * layer.tint_strength)))
+            img = _P.alpha_composite(img, tint)
+        return img
 
     def selected_layer(self) -> Optional[Layer]:
         return self._layers[self._sel] if 0 <= self._sel < len(self._layers) else None
+
+    def selected_layer_index(self) -> int:
+        """Return the currently selected layer index, or -1 if nothing selected.
+        UI code must call this instead of reading _sel directly."""
+        return self._sel
 
     def update_selected_layer(self, **kw):
         l = self.selected_layer()
@@ -656,6 +694,118 @@ class PreviewCanvas(QWidget):
                 if hasattr(l, k): setattr(l, k, v)
             l.invalidate()
             self.layers_changed.emit(); self.update()
+
+    def update_layer_no_history(self, **kw):
+        """Apply field updates to the selected layer WITHOUT pushing undo history.
+        Use for high-frequency slider feedback (brightness, contrast, saturation)
+        where pushing an undo entry on every tick would flood the undo stack.
+        Still invalidates the layer pixmap cache and FX composite cache."""
+        l = self.selected_layer()
+        if l:
+            changed = False
+            for k, v in kw.items():
+                if hasattr(l, k):
+                    setattr(l, k, v)
+                    changed = True
+            if changed:
+                l._pix = None
+                l._pix_dirty = True
+                self._fx_cache = None
+                self.update()
+
+    def invalidate_fx_cache(self):
+        """Invalidate the FX composite cache so the next paint rebuilds it.
+        Call this whenever anything that affects the full-scene render changes."""
+        self._fx_cache = None
+        self._effects_pix = None
+        self.update()
+
+    def invalidate_layer_cache(self, layer: Layer):
+        """Invalidate the pixmap cache for a specific layer and the FX composite.
+        Use this when the layer's PIL image has been modified externally
+        (e.g. after a pixel-level edit) and a redraw is needed.
+        Does NOT push undo history — caller is responsible for that if needed."""
+        layer._pix = None
+        layer._pix_dirty = True
+        self._fx_cache = None
+        self._effects_pix = None
+        self.layers_changed.emit()
+        self.update()
+
+    def replace_selected_layer_image(self, new_pil_image):
+        """Replace the PIL image of the selected layer, push undo, and redraw.
+        Use this for pixel-level image edits (e.g. colour replace operations)
+        that change the layer content but not its geometry."""
+        layer = self.selected_layer()
+        if layer is None:
+            return
+        self._push_history()
+        layer.pil_image = new_pil_image
+        layer._pix = None
+        layer._pix_dirty = True
+        self._fx_cache = None
+        self._effects_pix = None
+        self.layers_changed.emit()
+        self.update()
+
+    def layer_widget_rect(self, layer: Layer) -> "QRect":
+        """Return the widget-space bounding rect for a layer.
+        Public alias for _layer_wrect — use this from outside the canvas."""
+        return self._layer_wrect(layer)
+
+    def replace_layers(self, layers: list, selected_index: int = -1):
+        """
+        Replace the entire layer stack for project-load bootstrap.
+        This is the ONLY sanctioned path for bulk layer replacement from outside
+        the canvas (e.g. projectIO.load_project).
+
+        - Resets all interaction state (drag, resize, rotate, pan, crop, shape).
+        - Clears FX and pixmap caches.
+        - Clears undo/redo history and pushes one clean entry for the loaded state.
+        - Does NOT reset pan/zoom — caller must call reset_pan() if desired.
+        - Emits layers_changed and layer_selected.
+        """
+        # Cancel any in-progress interaction so no stale state leaks
+        self._drag_active      = False
+        self._resize_active    = False
+        self._rotate_active    = False
+        self._pan_active       = False
+        self._hand_active      = False
+        self._guides_active    = False
+        self._crop_mode        = False
+        self._crop_rect        = None
+        self._crop_drag_handle = -1
+        self._shape_drawing    = False
+
+        # Clear all caches
+        self._fx_cache      = None
+        self._fx_cache_key  = ()
+        self._effects_pix   = None
+
+        # Clear undo history — project load is the new baseline
+        self._history.clear()
+        self._redo_stack.clear()
+
+        # Invalidate per-layer pixmap caches so they rebuild from PIL data
+        for layer in layers:
+            layer._pix = None
+            layer._pix_dirty = True
+            if hasattr(layer, '_transform_dirty'):
+                layer._transform_dirty = False
+
+        # Replace layer stack and selection
+        self._layers = layers
+        if layers:
+            self._sel = max(0, min(selected_index, len(layers) - 1))
+        else:
+            self._sel = -1
+
+        # Push one clean history entry so undo doesn't go below loaded state
+        self._push_history()
+
+        self.layers_changed.emit()
+        self.layer_selected.emit(self._sel)
+        self.update()
 
     # ── Undo / Redo ────────────────────────────────────────────────────────────
     def _push_history(self):
@@ -822,7 +972,7 @@ class PreviewCanvas(QWidget):
         p.save(); p.setClipRect(cr)
         for i, layer in enumerate(self._layers):
             if layer.visible and layer.kind != "group":
-                self._paint_layer(p, layer, i == self._sel)
+                self._paint_layer(p, layer)
         p.restore()
 
         # 5. Global post-processing effects (Film Grain + Chromatic Aberration)
@@ -887,7 +1037,211 @@ class PreviewCanvas(QWidget):
         if self._guides_active:
             self._smart_guides.draw(p, self._canvas_rect())
 
+        # Selection overlay — ALWAYS drawn last so global FX cannot cover it.
+        # Uses QTransform.map to compute the true rotated polygon geometry.
+        if not self._crop_mode:
+            self._paint_selection_overlay(p)
+
         p.end()
+
+    # ── Selection overlay ─────────────────────────────────────────────────────
+
+    def _paint_selection_overlay(self, p: QPainter):
+        """
+        Draw the selection bounding box, resize handles, and rotation knob
+        on top of ALL composited content (including global FX).
+
+        Key correctness guarantees:
+        - Called after _draw_with_global_fx so FX never paints over the handles.
+        - Uses QTransform.map to compute the exact rotated polygon corners from
+          the layer's widget-space rect — so the box tracks the visual content
+          precisely even at arbitrary rotation angles.
+        - Resets opacity and composition mode before drawing so no FX state leaks.
+        - Clips to the canvas rect (plus one handle-size margin) so handles at
+          exact canvas edges remain fully visible.
+        """
+        n = len(self._layers)
+        if n == 0 or not (0 <= self._sel < n):
+            return
+        l = self._layers[self._sel]
+        if not l.visible:
+            return
+
+        from PySide6.QtCore  import QPointF, QRectF
+        from PySide6.QtGui   import QTransform, QPolygonF
+        import math as _math
+
+        cr = self._canvas_rect()
+
+        # Sub-pixel widget rect for the layer's axis-aligned bounding box
+        wr = self._layer_wrect_f(l)
+        cx_f = wr.left() + wr.width()  / 2.0
+        cy_f = wr.top()  + wr.height() / 2.0
+        rot  = l.rotation if hasattr(l, "rotation") else 0.0
+
+        # Build the QTransform that maps local (unrotated) rect coords
+        # to their final widget positions.  This is the correct way to compute
+        # rotated handles — no manual sin/cos arithmetic needed.
+        T = QTransform()
+        T.translate(cx_f, cy_f)
+        T.rotate(rot)
+        T.translate(-cx_f, -cy_f)
+
+        # Four corners of the axis-aligned rect → mapped to rotated widget space
+        corners_local = [
+            QPointF(wr.left(),  wr.top()),
+            QPointF(wr.right(), wr.top()),
+            QPointF(wr.right(), wr.bottom()),
+            QPointF(wr.left(),  wr.bottom()),
+        ]
+        corners_w = [T.map(pt) for pt in corners_local]
+
+        # The 8 handle anchor points (mapped through the same transform)
+        handle_pts_local = [
+            QPointF(wr.left(),  wr.top()),       # 0 TL
+            QPointF(cx_f,       wr.top()),        # 1 T  (top-centre)
+            QPointF(wr.right(), wr.top()),        # 2 TR
+            QPointF(wr.right(), cy_f),            # 3 R
+            QPointF(wr.right(), wr.bottom()),     # 4 BR
+            QPointF(cx_f,       wr.bottom()),     # 5 B
+            QPointF(wr.left(),  wr.bottom()),     # 6 BL
+            QPointF(wr.left(),  cy_f),            # 7 L
+        ]
+        handle_pts_w = [T.map(pt) for pt in handle_pts_local]
+
+        # Rotation stem: top-centre → knob (upward in the rotated frame)
+        STEM = 32
+        tc_local   = QPointF(cx_f, wr.top())
+        stem_local = QPointF(cx_f, wr.top() - STEM)
+        tc_w   = T.map(tc_local)
+        stem_w = T.map(stem_local)
+
+        p.save()
+        p.setOpacity(1.0)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        # Allow handles at the canvas edge to remain visible
+        p.setClipRect(cr.adjusted(-HANDLE_SIZE, -HANDLE_SIZE,
+                                   HANDLE_SIZE,  HANDLE_SIZE))
+
+        H = HANDLE_SIZE
+
+        # ── Dashed rotated bounding polygon ──────────────────────────────────
+        poly = QPolygonF(corners_w + [corners_w[0]])   # close the polygon
+        p.setPen(QPen(QColor(80, 160, 255), 1, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawPolyline(poly)
+
+        # ── Rotation stem ─────────────────────────────────────────────────────
+        p.setPen(QPen(QColor(80, 160, 255, 160), 1, Qt.SolidLine))
+        p.drawLine(tc_w, stem_w)
+
+        # ── 8 resize handles ─────────────────────────────────────────────────
+        for i, pt in enumerate(handle_pts_w):
+            is_corner = i in (0, 2, 4, 6)
+            p.setPen(QPen(QColor(255, 255, 255), 1))
+            p.setBrush(QBrush(QColor(80, 160, 255) if is_corner
+                              else QColor(20, 40, 80, 200)))
+            hr = QRectF(pt.x() - HANDLE_HALF,
+                        pt.y() - HANDLE_HALF, H, H)
+            p.drawRect(hr)
+
+        # ── Rotation knob ─────────────────────────────────────────────────────
+        p.setPen(QPen(QColor(255, 255, 255), 1))
+        p.setBrush(QBrush(QColor(60, 220, 180)))
+        p.drawEllipse(stem_w, HANDLE_HALF, HANDLE_HALF)
+
+        p.restore()
+
+    def _fx_cache_key_current(self) -> tuple:
+        """
+        Stable key that covers everything affecting the FX composite.
+        If this matches _fx_cache_key the cached QPixmap is still valid.
+        Now includes per-layer colour adjustments and crop so cache properly
+        invalidates when those values change.
+        """
+        layer_sig = tuple(
+            (l.kind, l.visible, l.x, l.y, l.w, l.h,
+             id(l.pil_image), l.opacity, l.rotation,
+             l.brightness, l.contrast, l.saturation,
+             l.tint_color, l.tint_strength,
+             l.crop_l, l.crop_t, l.crop_r, l.crop_b,
+             l.flip_h, l.flip_v, l.blend_mode)
+            for l in self._layers
+        )
+        return (
+            self._effects_grain,
+            self._effects_ca,
+            self._bg_color.rgb(),
+            id(self._template_pix),
+            id(self._bg_pix),
+            layer_sig,
+        )
+
+    # ── PIL blend-mode compositor ──────────────────────────────────────────────
+    # Single source of truth for PIL/numpy blend compositing.
+    # Mirrors the bm_map in _paint_layer so that _draw_with_global_fx and
+    # compose_to_pil produce the same result as the Qt hardware path.
+    @staticmethod
+    def _pil_blend_composite(base, layer_img, blend_mode):
+        """
+        Composite layer_img onto base in PIL/numpy using blend_mode.
+
+        base, layer_img : PIL RGBA images of identical size (full doc canvas).
+        blend_mode      : string key matching _paint_layer's bm_map
+                          ("normal","multiply","screen","overlay","soft_light","color").
+        Unknown / empty modes fall back to normal (alpha_composite = SourceOver).
+
+        Opacity must already be pre-baked into layer_img's alpha before calling.
+        Template / bg-overlay layers are always SourceOver — call alpha_composite
+        directly for those (they have no blend_mode attribute).
+        """
+        import numpy as _np
+        from PIL import Image as _PIL
+
+        if blend_mode in ("normal", "", None):
+            return _PIL.alpha_composite(base, layer_img)
+
+        b = _np.array(base,      dtype=_np.float32)
+        s = _np.array(layer_img, dtype=_np.float32)
+
+        Ba1 = b[:, :, 3] / 255.0
+        Sa1 = s[:, :, 3] / 255.0
+        Br1 = b[:, :, :3] / 255.0          # (H,W,3)
+        Sr1 = s[:, :, :3] / 255.0
+
+        if blend_mode == "multiply":
+            Cr1 = Br1 * Sr1
+        elif blend_mode == "screen":
+            Cr1 = 1.0 - (1.0 - Br1) * (1.0 - Sr1)
+        elif blend_mode == "overlay":
+            Cr1 = _np.where(Br1 < 0.5,
+                            2.0 * Br1 * Sr1,
+                            1.0 - 2.0 * (1.0 - Br1) * (1.0 - Sr1))
+        elif blend_mode == "soft_light":
+            d = _np.where(Br1 <= 0.25,
+                          ((16.0 * Br1 - 12.0) * Br1 + 4.0) * Br1,
+                          _np.sqrt(_np.maximum(Br1, 0.0)))
+            Cr1 = _np.where(Sr1 <= 0.5,
+                            Br1 - (1.0 - 2.0 * Sr1) * Br1 * (1.0 - Br1),
+                            Br1 + (2.0 * Sr1 - 1.0) * (d - Br1))
+        elif blend_mode == "color":          # Color Burn
+            Cr1 = _np.where(
+                Sr1 == 0.0, 0.0,
+                _np.clip(1.0 - (1.0 - Br1) / _np.maximum(Sr1, 1e-6), 0.0, 1.0))
+        else:
+            return _PIL.alpha_composite(base, layer_img)
+
+        # Porter-Duff Source-Over alpha with blended RGB
+        Sa1_3 = Sa1[:, :, _np.newaxis]
+        Ba1_3 = Ba1[:, :, _np.newaxis]
+        out_a = Sa1 + Ba1 * (1.0 - Sa1)
+        out_a3 = _np.maximum(out_a[:, :, _np.newaxis], 1e-8)
+        out_rgb = (Sa1_3 * Cr1 + Ba1_3 * Br1 * (1.0 - Sa1_3)) / out_a3
+
+        result = _np.concatenate(
+            [out_rgb * 255.0, out_a[:, :, _np.newaxis] * 255.0], axis=2
+        ).clip(0, 255).astype(_np.uint8)
+        return _PIL.fromarray(result, "RGBA")
 
     def _draw_with_global_fx(self, painter: QPainter, cr: QRect):
         """
@@ -895,58 +1249,120 @@ class PreviewCanvas(QWidget):
         apply Film Grain and Chromatic Aberration to the full composite,
         then draw the result scaled into cr.
         Called only when effects strength > 0.
+
+        PERFORMANCE: result is cached in _fx_cache.  The cache key captures
+        all scene inputs; if nothing changed, the cached QPixmap is reused
+        and no PIL/NumPy work is done.  During active drag/resize we skip the
+        FX overdraw entirely so the live QPainter layer paint (step 4) stays
+        visible.  The FX cache is rebuilt on mouseRelease.
         """
         from PIL import Image as _PILFx
 
+        # ── Fast path during interaction: let live _paint_layer draw stand ─────
+        # paintEvent step 4 already drew every layer with current geometry.
+        # Drawing _fx_cache here would overwrite that live frame with a stale
+        # pre-drag snapshot.  Return immediately; cache rebuilds on release.
+        if self._drag_active or self._resize_active or self._rotate_active:
+            return
+
+        # ── Cache hit: nothing changed, reuse ─────────────────────────────────
+        cur_key = self._fx_cache_key_current()
+        if self._fx_cache is not None and cur_key == self._fx_cache_key:
+            painter.setOpacity(1.0)
+            painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_SourceOver)
+            painter.drawPixmap(cr, self._fx_cache)
+            return
+
+        # ── Cache miss: rebuild full composite ────────────────────────────────
         dw, dh = self._doc_size.width(), self._doc_size.height()
 
-        # ── Composite all scene elements at doc resolution ─────────────────────
         r, g, b = self._bg_color.red(), self._bg_color.green(), self._bg_color.blue()
-        comp = _PILFx.new("RGBA", (dw, dh), (r, g, b, 255))
+        if getattr(self, "_transparent_bg", False):
+            comp = _PILFx.new("RGBA", (dw, dh), (0, 0, 0, 0))
+        else:
+            comp = _PILFx.new("RGBA", (dw, dh), (r, g, b, 255))
 
-        # Template PNG
+        # Template and bg overlay are always SourceOver — no blend_mode attribute
         if self._template_pix and not self._template_pix.isNull():
-            tpl = _qpixmap_to_pil(self._template_pix).convert("RGBA").resize((dw, dh), _PILFx.LANCZOS)
+            tpl = _qpixmap_to_pil(self._template_pix).convert("RGBA").resize(
+                (dw, dh), _PILFx.LANCZOS)
             comp = _PILFx.alpha_composite(comp, tpl)
 
-        # Background overlay (_bg_pix)
         if self._bg_pix and not self._bg_pix.isNull():
-            bg = _qpixmap_to_pil(self._bg_pix).convert("RGBA").resize((dw, dh), _PILFx.LANCZOS)
+            bg = _qpixmap_to_pil(self._bg_pix).convert("RGBA").resize(
+                (dw, dh), _PILFx.LANCZOS)
             comp = _PILFx.alpha_composite(comp, bg)
 
-        # All visible layers
         for l in self._layers:
             if not l.visible or l.kind == "group":
                 continue
+            bm = getattr(l, "blend_mode", "normal") or "normal"
             if l.is_image_like and l.pil_image:
                 try:
-                    img = l.pil_image.convert("RGBA").resize(
-                        (max(1, l.w), max(1, l.h)), _PILFx.LANCZOS)
+                    img = l.pil_image.convert("RGBA")
+                    # Apply crop (same logic as _get_pix)
+                    w_src, h_src = img.size
+                    cl, ct, cr_px, cb = l.crop_l, l.crop_t, l.crop_r, l.crop_b
+                    if cl or ct or cr_px or cb:
+                        img = img.crop((cl, ct,
+                                        max(cl + 1, w_src - cr_px),
+                                        max(ct + 1, h_src - cb)))
+                    # Apply per-layer colour adjustments so FX composite
+                    # matches the normal (non-FX) render path exactly.
+                    img = self._apply_layer_adjustments(img, l)
+                    img = img.resize((max(1, l.w), max(1, l.h)), _PILFx.LANCZOS)
                     if l.opacity < 1.0:
                         a = img.split()[3].point(lambda px: int(px * l.opacity))
                         img.putalpha(a)
                     tmp = _PILFx.new("RGBA", (dw, dh), (0, 0, 0, 0))
                     tmp.paste(img, (l.x, l.y), img)
-                    comp = _PILFx.alpha_composite(comp, tmp)
+                    comp = self._pil_blend_composite(comp, tmp, bm)
                 except Exception:
                     pass
+            elif l.kind == "fill":
+                fill_img = _PILFx.new("RGBA", (max(1, l.w), max(1, l.h)),
+                                      (*l.fill_color, int(255 * l.opacity)))
+                tmp = _PILFx.new("RGBA", (dw, dh), (0, 0, 0, 0))
+                tmp.paste(fill_img, (l.x, l.y), fill_img)
+                comp = self._pil_blend_composite(comp, tmp, bm)
+            elif l.kind == "text":
+                from PIL import ImageDraw as _IDraw, ImageFont as _IFont
+                t = _PILFx.new("RGBA", (dw, dh), (0, 0, 0, 0))
+                d = _IDraw.Draw(t)
+                try:
+                    fp = os.path.join(FONTS_DIR, l.font_name)
+                    fnt = _IFont.truetype(fp, l.font_size)
+                except Exception:
+                    try:    fnt = _IFont.load_default(size=l.font_size)
+                    except: fnt = _IFont.load_default()
+                text = l.text.upper() if l.font_uppercase else l.text
+                d.text((l.x, l.y), text,
+                       fill=(*l.font_color, int(255 * l.opacity)), font=fnt)
+                comp = self._pil_blend_composite(comp, t, bm)
 
-        # ── Apply global effects to the full composite ─────────────────────────
         arr = np.array(comp, dtype=np.float32)
         arr = self._apply_film_grain(arr, self._effects_grain)
         arr = self._apply_chromatic_aberration(arr, self._effects_ca)
         comp = _PILFx.fromarray(arr.clip(0, 255).astype(np.uint8), "RGBA")
 
-        # ── Convert to QPixmap and draw scaled into canvas rect ────────────────
-        buf = io.BytesIO()
-        comp.save(buf, "PNG"); buf.seek(0)
-        out_pix = QPixmap()
-        out_pix.loadFromData(buf.getvalue())
+        # Convert via QImage (avoids PNG encode/decode round-trip)
+        arr_out = np.ascontiguousarray(np.array(comp, dtype=np.uint8))
+        h_out, w_out = arr_out.shape[:2]
+        from PySide6.QtGui import QImage
+        qi = QImage(arr_out.data, w_out, h_out,
+                    w_out * 4, QImage.Format.Format_RGBA8888).copy()
+        out_pix = QPixmap.fromImage(qi)
+
+        self._fx_cache     = out_pix
+        self._fx_cache_key = cur_key
+
         painter.setOpacity(1.0)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        painter.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_SourceOver)
         painter.drawPixmap(cr, out_pix)
 
-    def _paint_layer(self, p: QPainter, l: Layer, selected: bool):
+    def _paint_layer(self, p: QPainter, l: Layer):
         wr = self._layer_wrect(l)
         p.setOpacity(l.opacity)
 
@@ -1167,76 +1583,34 @@ class PreviewCanvas(QWidget):
             p.drawText(wr, Qt.AlignCenter, "⬡  Selection")
             p.restore()
 
-        # Reset
+        # Reset painter state
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setOpacity(1.0)
 
-        if selected:
-            from PySide6.QtCore import QPointF, QRectF
-            import math as _math
-            # JITTER FIX: use float-precision rect so the bounding box and all
-            # handles are positioned at sub-pixel accuracy — no 1-px snap/jump.
-            wr_rect  = self._layer_wrect_f(l)
-            cx_f = wr_rect.left() + wr_rect.width()  / 2.0
-            cy_f = wr_rect.top()  + wr_rect.height() / 2.0
-            rot  = l.rotation if hasattr(l, 'rotation') else 0.0
-            rad  = _math.radians(rot)
-            cos_r = _math.cos(rad)
-            sin_r = _math.sin(rad)
-
-            # ── Draw everything in the layer's rotated frame ──────────────────
-            p.save()
-            p.translate(cx_f, cy_f)
-            p.rotate(rot)
-            p.translate(-cx_f, -cy_f)
-
-            H = HANDLE_SIZE
-
-            # Dashed border
-            p.setPen(QPen(QColor(80, 160, 255), 1, Qt.DashLine))
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(wr_rect)
-
-            # Stem: from rotated top-centre upward (in local unrotated space,
-            # "up" is simply decreasing Y — the painter is already rotated)
-            STEM = 32
-            tc   = QPointF(cx_f, wr_rect.top())
-            stem = QPointF(cx_f, wr_rect.top() - STEM)
-            p.setPen(QPen(QColor(80, 160, 255, 160), 1, Qt.SolidLine))
-            p.drawLine(tc, stem)
-
-            # 8 resize handles in the painter's already-rotated space
-            local_pts = [
-                QPointF(wr_rect.left(),   wr_rect.top()),     # 0 TL
-                QPointF(cx_f,             wr_rect.top()),     # 1 T
-                QPointF(wr_rect.right(),  wr_rect.top()),     # 2 TR
-                QPointF(wr_rect.right(),  cy_f),              # 3 R
-                QPointF(wr_rect.right(),  wr_rect.bottom()),  # 4 BR
-                QPointF(cx_f,             wr_rect.bottom()),  # 5 B
-                QPointF(wr_rect.left(),   wr_rect.bottom()),  # 6 BL
-                QPointF(wr_rect.left(),   cy_f),              # 7 L
-            ]
-            for i, pt in enumerate(local_pts):
-                is_corner = i in (0, 2, 4, 6)
-                p.setPen(QPen(QColor(255, 255, 255), 1))
-                p.setBrush(QBrush(QColor(80, 160, 255) if is_corner
-                                  else QColor(20, 40, 80, 200)))
-                # JITTER FIX: QRectF keeps sub-pixel position — int() would
-                # re-introduce the truncation jitter we just eliminated above.
-                hr = QRectF(pt.x() - HANDLE_HALF,
-                            pt.y() - HANDLE_HALF,
-                            H, H)
-                p.drawRect(hr)
-
-            # Rotation knob — cyan circle at stem tip (local: top-centre minus STEM)
-            rot_pt = QPointF(cx_f, wr_rect.top() - STEM)
-            p.setPen(QPen(QColor(255, 255, 255), 1))
-            p.setBrush(QBrush(QColor(60, 220, 180)))
-            p.drawEllipse(rot_pt, HANDLE_HALF, HANDLE_HALF)
-
-            p.restore()
-
     def _get_pix(self, l: Layer) -> Optional[QPixmap]:
+        # ── Fast path during active resize ───────────────────────────────────
+        # While the user is dragging a resize handle we skip the expensive PIL
+        # colour-adjustment pipeline and return the existing cached pixmap (or
+        # the raw source image pixmap).  Qt will scale it on-the-fly via the
+        # transform set in _paint_layer — visually "good enough" and smooth.
+        # The full rebuild happens in mouseReleaseEvent (l.invalidate() + update).
+        if self._resize_active:
+            if l._pix:
+                return l._pix
+            # No cache yet — do a fast raw conversion without adjustments
+            if l.pil_image:
+                try:
+                    arr = __import__("numpy").ascontiguousarray(
+                        __import__("numpy").array(l.pil_image.convert("RGBA"), dtype=__import__("numpy").uint8))
+                    h_r, w_r = arr.shape[:2]
+                    from PySide6.QtGui import QImage
+                    qi = QImage(arr.data, w_r, h_r, w_r * 4,
+                                QImage.Format.Format_RGBA8888).copy()
+                    return QPixmap.fromImage(qi)
+                except Exception:
+                    return None
+            return None
+
         if l._pix: return l._pix
         if not l.pil_image: return None
 
@@ -1275,11 +1649,15 @@ class PreviewCanvas(QWidget):
             # Composite tint over image using alpha
             img = PILImage.alpha_composite(img, tint)
 
-        buf = io.BytesIO()
-        img.save(buf, "PNG")
-        pix = QPixmap()
-        pix.loadFromData(buf.getvalue())
+        # Convert PIL → QPixmap via QImage (no PNG encode/decode round-trip)
+        arr_out = np.ascontiguousarray(np.array(img, dtype=np.uint8))
+        h_out, w_out = arr_out.shape[:2]
+        from PySide6.QtGui import QImage
+        qi = QImage(arr_out.data, w_out, h_out,
+                    w_out * 4, QImage.Format.Format_RGBA8888).copy()
+        pix = QPixmap.fromImage(qi)
         l._pix = pix
+        l.mark_clean()
         return pix
 
     def _make_qfont(self, l: Layer) -> QFont:
@@ -1494,7 +1872,7 @@ class PreviewCanvas(QWidget):
             if e.modifiers() & Qt.ShiftModifier:
                 new_ang = round(new_ang / 15) * 15
             l.rotation = new_ang % 360
-            l.invalidate()
+            l.invalidate_transform()
             self.update(); return
 
         # ── Move ──────────────────────────────────────────────────────────────
@@ -1512,7 +1890,7 @@ class PreviewCanvas(QWidget):
                         cl = self._layers[child_idx]
                         cl.x = cl.x - (l.x - (self._orig_rect.x() + dx))
                         cl.y = cl.y - (l.y - (self._orig_rect.y() + dy))
-                        cl.invalidate()
+                        cl.invalidate_transform()
 
             orig = self._orig_rect
             l.x = orig.x() + dx
@@ -1597,7 +1975,8 @@ class PreviewCanvas(QWidget):
             l.x = int(new_cx - new_w / 2.0)
             l.y = int(new_cy - new_h / 2.0)
 
-            l.invalidate()
+            l.invalidate_transform()   # size changed → pix redrawn at new dims on next paint
+            l._pix = None              # but DO discard cached pix since dimensions changed
             self._guides_active = True
             self._smart_guides.update(l, snap=False)
             self.update(); return
@@ -1654,15 +2033,32 @@ class PreviewCanvas(QWidget):
                 return
 
             self._crop_drag_handle = -1
+            was_rotating = self._rotate_active
+            was_resizing = self._resize_active
             moved = self._drag_active or self._resize_active or self._rotate_active
-            self._drag_active = self._resize_active = self._rotate_active = False
+
+            # Explicit flag resets — prevents the "rotate once then stuck" bug.
+            self._drag_active   = False
+            self._resize_active = False
+            self._rotate_active = False
             self._guides_active = False
             self._smart_guides.clear()
             self.setCursor(Qt.CrossCursor if self._crop_mode
                            else self._tool_cursor())
+
             if moved:
+                # After resize the pixel cache is stale (new dimensions).
+                # After rotate the transform is stale but pix is reusable.
+                if was_resizing and 0 <= self._sel < len(self._layers):
+                    self._layers[self._sel].invalidate()
+                elif was_rotating and 0 <= self._sel < len(self._layers):
+                    self._layers[self._sel].invalidate_transform()
+                # Always invalidate global FX cache when geometry changes.
+                self._fx_cache = None
+                self._effects_pix = None
                 self._push_history()
                 self.layers_changed.emit()
+                self.update()
 
     # ── Tool helpers ───────────────────────────────────────────────────────────
 
@@ -1836,6 +2232,73 @@ class PreviewCanvas(QWidget):
         self._update_viewport()
         self.update()
 
+    def wheelEvent(self, e):
+        """
+        Scroll wheel zooms the canvas.
+        BUG FIX: wheel events from combo-boxes and sliders in the editor panel
+        bubble up to the canvas via Qt's event propagation.  When they do, any
+        in-progress drag/resize would previously leave _drag_active stuck True
+        because mouseReleaseEvent never fires for a scroll.  We now cancel all
+        interaction state on any wheel event so handles can't get orphaned.
+        """
+        self._cancel_interaction()
+
+        delta = e.angleDelta().y()
+        if delta == 0:
+            return
+        factor = 1.15 if delta > 0 else (1.0 / 1.15)
+        self.set_zoom(self._zoom_factor * factor)
+
+    def focusOutEvent(self, e):
+        """
+        BUG FIX: cancel all drag/resize/rotate state when the canvas loses
+        focus (e.g. user clicks a combo-box or slider in the editor panel).
+        Without this, the drag state stays True and the next mouse-press picks
+        up a phantom delta, making layers teleport or handles disappear.
+        """
+        super().focusOutEvent(e)
+        self._cancel_interaction()
+
+    def leaveEvent(self, e):
+        """
+        BUG FIX: when the mouse leaves the canvas widget while a button is
+        still held (e.g. dragging off the edge), Qt may not deliver a
+        mouseReleaseEvent.  Cancel interaction so state doesn't stay stuck.
+        """
+        super().leaveEvent(e)
+        if not (self._drag_active or self._resize_active or
+                self._rotate_active or self._pan_active or self._hand_active):
+            return
+        # Only cancel if no buttons are actually pressed anymore
+        from PySide6.QtWidgets import QApplication
+        if not (QApplication.mouseButtons() & Qt.LeftButton) and \
+           not (QApplication.mouseButtons() & Qt.MiddleButton):
+            self._cancel_interaction()
+
+    def _cancel_interaction(self):
+        """
+        Reset all interaction flags to a clean idle state.
+        Safe to call at any time — commits a history snapshot if a move/resize
+        was in progress so no work is lost.
+        """
+        was_active = (self._drag_active or self._resize_active or
+                      self._rotate_active)
+        self._drag_active      = False
+        self._resize_active    = False
+        self._rotate_active    = False
+        self._pan_active       = False
+        self._hand_active      = False
+        self._guides_active    = False
+        self._crop_drag_handle = -1
+        self._smart_guides.clear()
+
+        if was_active:
+            self._push_history()
+            self.layers_changed.emit()
+
+        self.setCursor(self._tool_cursor())
+        self.update()
+
     # ── export ─────────────────────────────────────────────────────────────────
     def compose_to_pil(self) -> PILImage.Image:
         dw, dh = self._doc_size.width(), self._doc_size.height()
@@ -1875,11 +2338,31 @@ class PreviewCanvas(QWidget):
         # 4. Layers
         for l in self._layers:
             if not l.visible: continue
+            if l.kind == "group": continue
+            bm = getattr(l, "blend_mode", "normal") or "normal"
             if l.is_image_like and l.pil_image:
-                img = l.pil_image.convert("RGBA").resize((l.w, l.h), PILImage.LANCZOS)
+                img = l.pil_image.convert("RGBA")
+                # Apply crop
+                w_src, h_src = img.size
+                cl, ct, cr_px, cb = l.crop_l, l.crop_t, l.crop_r, l.crop_b
+                if cl or ct or cr_px or cb:
+                    img = img.crop((cl, ct,
+                                    max(cl + 1, w_src - cr_px),
+                                    max(ct + 1, h_src - cb)))
+                # Apply per-layer colour adjustments for export parity
+                img = self._apply_layer_adjustments(img, l)
+                img = img.resize((max(1, l.w), max(1, l.h)), PILImage.LANCZOS)
                 a = img.split()[3].point(lambda p: int(p * l.opacity))
                 img.putalpha(a)
-                canvas.paste(img, (l.x, l.y), img)
+                tmp = PILImage.new("RGBA", (dw, dh), (0, 0, 0, 0))
+                tmp.paste(img, (l.x, l.y), img)
+                canvas = self._pil_blend_composite(canvas, tmp, bm)
+            elif l.kind == "fill":
+                fill_img = PILImage.new("RGBA", (max(1, l.w), max(1, l.h)),
+                                        (*l.fill_color, int(255 * l.opacity)))
+                tmp = PILImage.new("RGBA", (dw, dh), (0, 0, 0, 0))
+                tmp.paste(fill_img, (l.x, l.y), fill_img)
+                canvas = self._pil_blend_composite(canvas, tmp, bm)
             elif l.kind == "text":
                 t = PILImage.new("RGBA", (dw, dh), (0,0,0,0))
                 d = ImageDraw.Draw(t)
@@ -1892,7 +2375,7 @@ class PreviewCanvas(QWidget):
                 text = l.text.upper() if l.font_uppercase else l.text
                 d.text((l.x, l.y), text,
                        fill=(*l.font_color, int(255 * l.opacity)), font=fnt)
-                canvas = PILImage.alpha_composite(canvas, t)
+                canvas = self._pil_blend_composite(canvas, t, bm)
         # ── Global post-processing effects on the full composite ─────────────────
         arr = np.array(canvas.convert("RGBA"), dtype=np.float32)
         arr = self._apply_film_grain(arr, getattr(self, "_effects_grain", 0))

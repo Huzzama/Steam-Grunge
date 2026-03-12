@@ -1,6 +1,5 @@
 """
-app/ui/steamSyncDialog.py
-"Sync to Steam" dialog.
+Sync to Steam" dialog.
 
 Flow:
   1. Dialog opens — auto-fetches AppID for current game name in background.
@@ -24,7 +23,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QObject, QThread
 from PySide6.QtGui  import QFont, QColor
 
-from app.services.appIdGetter import search_candidates
+from app.services.appIdGetter import search_candidates, NetworkError
 from app.services.steamSync   import (
     find_steam_userdata, list_steam_ids,
     get_grid_folder, sync_artwork, SyncResult,
@@ -32,15 +31,20 @@ from app.services.steamSync   import (
 
 # ── Async worker ──────────────────────────────────────────────────────────────
 class _AppIdWorker(QObject):
-    finished = Signal(list)   # list[dict]  candidates
+    finished = Signal(list, str)   # (candidates, error_message)
 
     def __init__(self, game_name: str):
         super().__init__()
         self._name = game_name
 
     def run(self):
-        results = search_candidates(self._name, limit=8)
-        self.finished.emit(results)
+        try:
+            results = search_candidates(self._name, limit=8)
+            self.finished.emit(results, "")
+        except NetworkError as e:
+            self.finished.emit([], str(e))
+        except Exception as e:
+            self.finished.emit([], str(e))
 
 
 # ── Divider helper ────────────────────────────────────────────────────────────
@@ -310,18 +314,27 @@ class SteamSyncDialog(QDialog):
         self._worker.finished.connect(self._worker_thread.quit)
         self._worker_thread.start()
 
-    def _on_lookup_done(self, candidates: list):
+    def _on_lookup_done(self, candidates: list, error: str):
         self._progress.setVisible(False)
         self._candidates = candidates
         self._candidate_combo.blockSignals(True)
         self._candidate_combo.clear()
+
+        if error:
+            self._candidate_combo.blockSignals(False)
+            short = error[:100] + ("…" if len(error) > 100 else "")
+            self._lookup_label.setText(
+                f"⚠  Network error — enter AppID manually.\n({short})")
+            self._lookup_label.setStyleSheet("color:#ccaa44;")
+            self._sync_btn.setEnabled(True)   # allow manual AppID entry
+            self._rebuild_files_list()
+            return
 
         if candidates:
             for c in candidates:
                 self._candidate_combo.addItem(
                     f"{c['name']}  [{c['id']}]", userData=c)
             self._candidate_combo.blockSignals(False)
-            # Auto-select best match
             best = candidates[0]
             self._appid_edit.setText(str(best["id"]))
             self._lookup_label.setText(
@@ -333,7 +346,7 @@ class SteamSyncDialog(QDialog):
             self._lookup_label.setText(
                 "✖  No results — enter the AppID manually.")
             self._lookup_label.setStyleSheet("color:#cc6666;")
-            self._sync_btn.setEnabled(True)   # allow manual entry
+            self._sync_btn.setEnabled(True)
 
         self._rebuild_files_list()
 
