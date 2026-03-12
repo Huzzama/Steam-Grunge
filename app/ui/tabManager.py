@@ -34,8 +34,6 @@ from app.ui.editorPanel        import EditorPanel
 from app.ui.canvas.previewCanvas import PreviewCanvas
 from app.ui.brushPanel         import BrushPanel
 from app.ui.floatingContextTb  import FloatingContextTb
-from app.editor                import compositor
-from app.editor                import exports as exporter
 from app.state                 import AppState          # class, not singleton
 
 
@@ -53,7 +51,7 @@ class WorkspaceTab(QWidget):
 
         self._compose_timer = QTimer()
         self._compose_timer.setSingleShot(True)
-        self._compose_timer.setInterval(120)
+        self._compose_timer.setInterval(80)   # was 120 ms — tighter for snappier feel
         self._compose_timer.timeout.connect(self._do_compose)
 
         self._build()
@@ -114,19 +112,40 @@ class WorkspaceTab(QWidget):
         self._compose_timer.start()
 
     def _do_compose(self):
+        """
+        Single rendering pipeline — drives PreviewCanvas only.
+        PreviewCanvas is the only live render/edit authority.
+
+        set_template() is only called when the template key actually changes,
+        preventing the unconditional viewport recompute that previously
+        reset the user's pan offset on every 120 ms compose tick.
+        """
         try:
-            self.preview_canvas.set_template(self.state.current_template)
-            r, g, b = getattr(self.state, "bg_color", (0, 0, 0))
-            self.preview_canvas.set_background_color(QColor(r, g, b))
-            img = compositor.compose(self.state)
-            self.state.composed_image = img
-            self.preview_canvas.update()
-            size = (f"{self.preview_canvas._doc_size.width()}"
-                    f"×{self.preview_canvas._doc_size.height()}")
+            canvas = self.preview_canvas
+            st     = self.state
+
+            # Guard: only call set_template when it has actually changed.
+            # set_template() resets _pan_offset when doc size changes, so
+            # calling it on every colour/effect slider update silently
+            # discards the user's current view position.
+            if canvas.template_key() != st.current_template:
+                canvas.set_template(st.current_template)
+
+            r, g, b = getattr(st, "bg_color", (0, 0, 0))
+            canvas.set_background_color(QColor(r, g, b))
+
+            canvas.update_effects_overlay(
+                getattr(st, "film_grain", 0.0),
+                getattr(st, "chromatic_aberration", 0.0),
+            )
+
+            canvas.update()
+
+            size = f"{canvas.doc_size().width()}×{canvas.doc_size().height()}"
             self.status_changed.emit(
-                f"Template: {self.state.current_template.upper()}  |  "
+                f"Template: {st.current_template.upper()}  |  "
                 f"Size: {size}  |  "
-                f"Game: {self.state.selected_game_name or '—'}"
+                f"Game: {st.selected_game_name or '—'}"
             )
         except Exception as e:
             import traceback

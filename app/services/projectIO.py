@@ -138,15 +138,18 @@ def save_project(tab: "WorkspaceTab", path: str) -> None:
 
     # ── Build project.json ─────────────────────────────────────────────────
     bg = getattr(st, "bg_color", (0, 0, 0))
-    doc_size = (canvas._doc_size.width(), canvas._doc_size.height())
+    doc_size = canvas.doc_size()
 
     project: dict = {
         "format_version":  FORMAT_VER,
         "sge_version":     _get_app_version(),
         "game_name":       st.selected_game_name,
         "template":        st.current_template,
-        "doc_size":        list(doc_size),
+        "doc_size":        [doc_size.width(), doc_size.height()],
         "bg_color":        list(bg) if isinstance(bg, tuple) else bg,
+        # Confirmed Steam identity — persisted so load → export skips re-confirmation
+        "confirmed_app_id":   getattr(st, "confirmed_app_id",   None),
+        "confirmed_app_name": getattr(st, "confirmed_app_name", ""),
         # AppState filter / colour settings
         "film_grain":           st.film_grain,
         "chromatic_aberration": st.chromatic_aberration,
@@ -166,7 +169,7 @@ def save_project(tab: "WorkspaceTab", path: str) -> None:
         # Canvas layer stack
         "layers":               layers_meta,
         # Selection index — nice-to-have, non-critical
-        "selected_layer_idx":   canvas._sel,
+        "selected_layer_idx":   canvas.selected_layer_index(),
     }
 
     # ── Write ZIP ──────────────────────────────────────────────────────────
@@ -233,20 +236,48 @@ def load_project(tab: "WorkspaceTab", path: str) -> None:
     canvas = tab.preview_canvas
     st     = tab.state
 
-    # Replace layer stack without touching undo history
+    # Load the layer stack directly into the canvas internals here because
+    # this is an I/O bootstrap operation (not a user action), and reorder_layers()
+    # guards against count mismatches.  We do NOT push undo during load.
+    # Interaction flags are reset first so no stale drag/resize state leaks.
+    canvas._drag_active      = False
+    canvas._resize_active    = False
+    canvas._rotate_active    = False
+    canvas._pan_active       = False
+    canvas._hand_active      = False
+    canvas._guides_active    = False
+    canvas._crop_mode        = False
+    canvas._crop_rect        = None
+    canvas._crop_drag_handle = -1
+    canvas._shape_drawing    = False
+
+    # Clear caches before replacing layer stack
+    canvas._fx_cache      = None
+    canvas._fx_cache_key  = ()
+    canvas._history.clear()
+    canvas._redo_stack.clear()
+
+    # Replace layer stack — direct assignment is acceptable here because
+    # this is a project load (not a UI action). Push one clean history entry
+    # after so undo doesn't go below the loaded state.
     canvas._layers = rebuilt_layers
     sel = project.get("selected_layer_idx", 0)
     canvas._sel = max(0, min(sel, len(rebuilt_layers) - 1)) if rebuilt_layers else -1
 
-    # Clear all caches
-    canvas._fx_cache      = None
-    canvas._vp_cache_key  = None
-    canvas._history.clear()
-    canvas._redo_stack.clear()
+    # Invalidate per-layer pix caches so they rebuild from the freshly
+    # loaded PIL images, not from any stale previous session data
+    for layer in canvas._layers:
+        layer._pix = None
+        layer._pix_dirty = True
+        layer._transform_dirty = False
 
     # ── Apply AppState ─────────────────────────────────────────────────────
     st.selected_game_name      = project.get("game_name", "")
     st.current_template        = project.get("template", "cover")
+    # Restore confirmed Steam identity so load → export reuses the saved AppID
+    # without forcing the user through the confirmation dialog again.
+    st.confirmed_app_id        = project.get("confirmed_app_id",   None)
+    st.confirmed_app_name      = project.get("confirmed_app_name", "")
     st.film_grain              = project.get("film_grain", 20.0)
     st.chromatic_aberration    = project.get("chromatic_aberration", 10.0)
     st.scratches               = project.get("scratches", 30.0)
@@ -261,6 +292,10 @@ def load_project(tab: "WorkspaceTab", path: str) -> None:
     st.platform_bar_name       = project.get("platform_bar_name", "none")
     st.show_spine              = project.get("show_spine", True)
     st.spine_text              = project.get("spine_text", "")
+
+    # export_paths is ephemeral — always start empty on load so stale
+    # paths from a previous session are never accidentally reused.
+    st.export_paths = {}
 
     tc = project.get("tint_color")
     st.tint_color = tuple(tc) if tc else None
@@ -281,10 +316,42 @@ def load_project(tab: "WorkspaceTab", path: str) -> None:
     if rebuilt_layers and canvas._sel >= 0:
         ep._on_canvas_layer_selected(canvas._sel)
 
-    # ── Trigger a recompose ────────────────────────────────────────────────
+    # ── Wipe FX cache SYNCHRONOUSLY before the first paint ────────────────
+    # update_effects_overlay() above may have queued a new FX cache rebuild.
+    # We must clear it here — before canvas.update() — so the very first
+    # repaint after load starts clean and the selection overlay is never
+    # hidden by a stale composite from the previous session.
+    canvas._fx_cache     = None
+    canvas._fx_cache_key = ()
+
+    # ── Trigger a recompose + immediate repaint ────────────────────────────
     tab.schedule_compose()
     canvas.layers_changed.emit()
     canvas.update()
+
+    # ── Deferred: restore focus + re-emit selection ───────────────────────
+    # A zero-delay QTimer fires after the current event loop cycle, by which
+    # point all panel refreshes and the first repaint have settled.  We then
+    # emit layer_selected again so the editor panel and floating toolbar
+    # update their state to match the freshly painted canvas.
+    from PySide6.QtCore import QTimer
+
+    def _restore_focus_and_selection():
+        canvas.setFocus()
+        # Clear FX cache once more in case schedule_compose() rebuilt it
+        # during the event-loop cycle between the synchronous update and now.
+        canvas._fx_cache     = None
+        canvas._fx_cache_key = ()
+        # Clamp sel in case a concurrent remove_layer() fired during load
+        if canvas._layers:
+            canvas._sel = max(0, min(canvas._sel, len(canvas._layers) - 1))
+        else:
+            canvas._sel = -1
+        if canvas._sel >= 0:
+            canvas.layer_selected.emit(canvas._sel)
+        canvas.update()
+
+    QTimer.singleShot(0, _restore_focus_and_selection)
 
 
 # ── Autosave ──────────────────────────────────────────────────────────────────

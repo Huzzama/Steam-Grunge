@@ -543,7 +543,7 @@ class LayerPropertiesWidget(QWidget):
         if not self._canvas:
             self._show("placeholder"); return
 
-        idx = self._canvas._sel
+        idx = self._canvas.selected_layer_index()
         if idx < 0 or idx >= len(self._canvas.layers):
             self._placeholder.set_message("◻", "Select a layer to\nedit its properties")
             self._show("placeholder"); return
@@ -613,15 +613,12 @@ class LayerPropertiesWidget(QWidget):
         self._set(attr, value, attr)
 
     def _set(self, attr: str, value, reason: str = ""):
-        """Apply an attribute to the selected layer and notify."""
+        """Apply an attribute to the selected layer via the canvas authority.
+        Routes through update_selected_layer() so undo history is pushed,
+        FX cache is invalidated, and layers_changed is emitted correctly."""
         if not self._canvas: return
-        layer = self._canvas.selected_layer()
-        if not layer: return
         try:
-            setattr(layer, attr, value)
-            if hasattr(layer, "invalidate"):
-                layer.invalidate()
-            self._canvas.update()
+            self._canvas.update_selected_layer(**{attr: value})
         except Exception:
             pass
         self.layer_changed.emit(reason)

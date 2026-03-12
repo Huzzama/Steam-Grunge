@@ -9,7 +9,6 @@ from PySide6.QtCore import Qt, Signal, QRect, QSize, QPoint
 from PySide6.QtGui import QFont, QColor, QPixmap, QPainter, QPen, QBrush, QFontMetrics
 import os, io
 
-from app.state import state
 from app.config import PLATFORM_BARS_DIR, TEXTURES_DIR, FONTS_DIR, TEMPLATES_DIR, RATINGS_DIR
 from app.ui.fontImporter import import_fonts, register_all_fonts
 
@@ -411,18 +410,18 @@ class EditorPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("EditorPanel")
         self.setStyleSheet(PANEL_STYLE)
-        # Palette: 5 slots, default colours
-        self._palette_colors = [
-            QColor("#ffffff"),  # white
-            QColor("#000000"),  # black
-            QColor("#cc2222"),  # red
-            QColor("#2255cc"),  # blue
-            QColor("#ddcc11"),  # yellow
-        ]
         self._brush_panel_ref = None   # set by MainWindow after both panels created
+        # Tab-local state and tab ref — set by set_canvas()
+        self._tab_state = None
+        self._tab_ref   = None
         # Register existing fonts with Qt so they're available immediately
         register_all_fonts(FONTS_DIR)
         self._build_ui()
+
+    # ── Tab-local state accessor ───────────────────────────────────────────────
+    def _st(self):
+        """Return the current tab's AppState, or None if not yet connected."""
+        return self._tab_state
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -557,49 +556,10 @@ class EditorPanel(QWidget):
         bg_layout.addWidget(btn_bg_color)
         layout.addWidget(grp_bg)
 
-        # ── COLOR PALETTE ──────────────────────────────────
-        grp_pal = QGroupBox("COLOR PALETTE")
-        grp_pal.setToolTip("Quick-access brush colors. Click to set brush color.")
-        pal_outer = QVBoxLayout(grp_pal)
-        pal_outer.setSpacing(5)
-        pal_outer.setContentsMargins(6, 8, 6, 6)
-
-        # Row of 5 swatches + refresh button
-        pal_row = QHBoxLayout()
-        pal_row.setSpacing(4)
-        self._pal_btns = []
-        for i in range(5):
-            btn = QPushButton()
-            btn.setFixedSize(30, 30)
-            btn.setToolTip(f"Palette slot {i+1} — click to use, right-click to change")
-            btn.setContextMenuPolicy(Qt.CustomContextMenu)
-            btn.customContextMenuRequested.connect(
-                lambda pos, idx=i: self._pal_edit_slot(idx))
-            btn.clicked.connect(lambda checked=False, idx=i: self._pal_pick(idx))
-            self._pal_btns.append(btn)
-            pal_row.addWidget(btn)
-
-        # Refresh button — re-extract from selected image
-        btn_pal_refresh = QPushButton("↺")
-        btn_pal_refresh.setFixedSize(24, 30)
-        btn_pal_refresh.setToolTip("Extract dominant colors from selected layer")
-        btn_pal_refresh.setStyleSheet("""
-            QPushButton {
-                background:#1a1a28; color:#666; border:1px solid #2e2e44;
-                border-radius:4px; font-size:14px;
-            }
-            QPushButton:hover { color:#aaa; border-color:#4455aa; }
-        """)
-        btn_pal_refresh.clicked.connect(self._pal_refresh_from_layer)
-        pal_row.addWidget(btn_pal_refresh)
-        pal_outer.addLayout(pal_row)
-        layout.addWidget(grp_pal)
-        self._refresh_palette_ui()
-
         # ── FILM GRAIN ─────────────────────────────────────
         grp_fg = QGroupBox("FILM GRAIN")
         fg_layout = QVBoxLayout(grp_fg)
-        self.grain_slider = LabeledSlider("Grain", 0, 100, int(state.film_grain))
+        self.grain_slider = LabeledSlider("Grain", 0, 100, 0)
         self.grain_slider.value_changed.connect(self._on_grain)
         fg_layout.addWidget(self.grain_slider)
         layout.addWidget(grp_fg)
@@ -607,7 +567,7 @@ class EditorPanel(QWidget):
         # ── CHROMATIC ABERRATION ───────────────────────────
         grp_ca = QGroupBox("CHROMATIC ABE")
         ca_layout = QVBoxLayout(grp_ca)
-        self.ca_slider = LabeledSlider("Aberration", 0, 100, int(state.chromatic_aberration))
+        self.ca_slider = LabeledSlider("Aberration", 0, 100, 0)
         self.ca_slider.value_changed.connect(self._on_ca)
         ca_layout.addWidget(self.ca_slider)
         layout.addWidget(grp_ca)
@@ -616,15 +576,15 @@ class EditorPanel(QWidget):
         grp_col = QGroupBox("COLOR")
         col_layout = QVBoxLayout(grp_col)
 
-        self.bright_slider = LabeledSlider("Brightness", 0, 100, int(state.brightness))
+        self.bright_slider = LabeledSlider("Brightness", 0, 100, 50)
         self.bright_slider.value_changed.connect(self._on_brightness)
         col_layout.addWidget(self.bright_slider)
 
-        self.contrast_slider = LabeledSlider("Contrast", 0, 100, int(state.contrast))
+        self.contrast_slider = LabeledSlider("Contrast", 0, 100, 50)
         self.contrast_slider.value_changed.connect(self._on_contrast)
         col_layout.addWidget(self.contrast_slider)
 
-        self.sat_slider = LabeledSlider("Saturation", 0, 100, int(state.saturation))
+        self.sat_slider = LabeledSlider("Saturation", 0, 100, 50)
         self.sat_slider.value_changed.connect(self._on_saturation)
         col_layout.addWidget(self.sat_slider)
         layout.addWidget(grp_col)
@@ -633,7 +593,7 @@ class EditorPanel(QWidget):
         grp_vhs = QGroupBox("VHS")
         vhs_layout = QVBoxLayout(grp_vhs)
 
-        self.scanlines_slider = LabeledSlider("Scanlines", 0, 100, int(state.vhs_scanlines))
+        self.scanlines_slider = LabeledSlider("Scanlines", 0, 100, 0)
         self.scanlines_slider.value_changed.connect(self._on_scanlines)
         vhs_layout.addWidget(self.scanlines_slider)
         layout.addWidget(grp_vhs)
@@ -1227,7 +1187,9 @@ class EditorPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _select_template(self, tpl: str):
-        state.current_template = tpl
+        st = self._st()
+        if st is not None:
+            st.current_template = tpl
         self._update_template_buttons()
         # Directly update canvas size + template PNG immediately
         if hasattr(self, '_canvas'):
@@ -1240,7 +1202,8 @@ class EditorPanel(QWidget):
         active_alpha_style = ("background:#1a1e2e; border:1px solid #3a4a6e; "
                               "color:#88aacc; font-size:13px; padding:5px 8px;")
         inactive_style    = ""
-        tpl = state.current_template
+        st = self._st()
+        tpl = st.current_template if st else "cover"
         self.tpl_cover_btn.setStyleSheet(    active_style       if tpl == "cover"        else inactive_style)
         self.tpl_vhs_btn.setStyleSheet(      active_style       if tpl == "vhs_cover"    else inactive_style)
         self.tpl_wide_btn.setStyleSheet(     active_style       if tpl == "wide"         else inactive_style)
@@ -1276,8 +1239,10 @@ class EditorPanel(QWidget):
     def _on_platform_changed(self, index: int):
         path = self.platform_combo.itemData(index)
         name = self.platform_combo.itemText(index)
-        state.platform_bar_name = name
-        state.show_platform_bar = (path is not None)
+        st = self._st()
+        if st is not None:
+            st.platform_bar_name = name
+            st.show_platform_bar = (path is not None)
         self._update_bar_preview()
         self.settings_changed.emit()
 
@@ -1290,10 +1255,9 @@ class EditorPanel(QWidget):
             return
         layer = self._canvas.add_image_layer(path,
             name=self.platform_combo.currentText())
-        dw = self._canvas._doc_size.width()
+        dw = self._canvas.doc_size().width()
         layer.x, layer.y, layer.w, layer.h = 0, 0, dw, 70
-        layer.invalidate()
-        self._canvas.update()
+        self._canvas.invalidate_layer_cache(layer)
         self._refresh_layer_list()
 
     def _populate_det_combo(self):
@@ -1329,15 +1293,14 @@ class EditorPanel(QWidget):
         path = self.det_combo.currentData()
         if not path or not os.path.exists(path):
             return
-        dw = self._canvas._doc_size.width()
-        dh = self._canvas._doc_size.height()
+        dw = self._canvas.doc_size().width()
+        dh = self._canvas.doc_size().height()
         layer = self._canvas.add_image_layer(path,
             name=self.det_combo.currentText())
         layer.x, layer.y, layer.w, layer.h = 0, 0, dw, dh
         layer.opacity  = 0.6
         layer.blend_mode = "overlay"
-        layer.invalidate()
-        self._canvas.update()
+        self._canvas.invalidate_layer_cache(layer)
         self._refresh_layer_list()
 
     # ── Ratings ─────────────────────────────────────────────────────────────────
@@ -1376,8 +1339,8 @@ class EditorPanel(QWidget):
         from PIL import Image as PILImage
         img = PILImage.open(path).convert("RGBA")
         # Place bottom-right corner, natural size capped at 200px wide
-        dw = self._canvas._doc_size.width()
-        dh = self._canvas._doc_size.height()
+        dw = self._canvas.doc_size().width()
+        dh = self._canvas.doc_size().height()
         w = min(img.width, 200)
         h = int(img.height * w / img.width)
         from app.ui.canvas.layers import Layer
@@ -1395,8 +1358,10 @@ class EditorPanel(QWidget):
             hex_c = color.name()
             self.bg_color_preview.setStyleSheet(
                 f"background:{hex_c}; border:1px solid #555;")
-            # Update state so compositor uses it
-            state.bg_color = (color.red(), color.green(), color.blue())
+            # Update tab-local state
+            st = self._st()
+            if st is not None:
+                st.bg_color = (color.red(), color.green(), color.blue())
             # Update canvas preview immediately
             if hasattr(self, '_canvas'):
                 self._canvas.set_background_color(color)
@@ -1404,37 +1369,51 @@ class EditorPanel(QWidget):
             self.settings_changed.emit()
 
     def _on_grain(self, v: float):
-        state.film_grain = v
-        self._update_canvas_effects()
+        st = self._st()
+        if st is not None:
+            st.film_grain = v
+        self._apply_document_fx_to_canvas()
         # PERF: do NOT emit settings_changed here — grain is a canvas-only
         # post-processing effect handled by previewCanvas._draw_with_global_fx.
         # Emitting settings_changed would trigger compositor.compose() which
         # runs a second full PIL render with no visual benefit for grain changes.
 
     def _on_ca(self, v: float):
-        state.chromatic_aberration = v
-        self._update_canvas_effects()
+        st = self._st()
+        if st is not None:
+            st.chromatic_aberration = v
+        self._apply_document_fx_to_canvas()
         # PERF: same as _on_grain — CA is canvas-only, compositor doesn't use it.
 
-    def _update_canvas_effects(self):
-        if hasattr(self, '_canvas'):
-            self._canvas.update_effects_overlay(
-                state.film_grain, state.chromatic_aberration)
+    def _apply_document_fx_to_canvas(self):
+        """Push the current tab's FX settings (grain + CA) to the canvas."""
+        if not hasattr(self, '_canvas'):
+            return
+        st = self._st()
+        grain = st.film_grain if st is not None else 0.0
+        ca    = st.chromatic_aberration if st is not None else 0.0
+        self._canvas.update_effects_overlay(grain, ca)
 
     def _on_brightness(self, v: float):
-        state.brightness = v
+        # Per-layer setting — route through the canvas authority (no undo history on every tick).
+        if hasattr(self, '_canvas') and self._canvas is not None:
+            self._canvas.update_layer_no_history(brightness=v)
         self.settings_changed.emit()
 
     def _on_contrast(self, v: float):
-        state.contrast = v
+        if hasattr(self, '_canvas') and self._canvas is not None:
+            self._canvas.update_layer_no_history(contrast=v)
         self.settings_changed.emit()
 
     def _on_saturation(self, v: float):
-        state.saturation = v
+        if hasattr(self, '_canvas') and self._canvas is not None:
+            self._canvas.update_layer_no_history(saturation=v)
         self.settings_changed.emit()
 
     def _on_scanlines(self, v: float):
-        state.vhs_scanlines = v
+        st = self._st()
+        if st is not None:
+            st.vhs_scanlines = v
         self.settings_changed.emit()
 
     def _on_export(self):
@@ -1466,20 +1445,43 @@ class EditorPanel(QWidget):
         pass  # spine removed
 
     def refresh_from_state(self):
-        """Sync all controls from the current state."""
-        self.grain_slider.set_value(state.film_grain)
-        self.ca_slider.set_value(state.chromatic_aberration)
-        self.bright_slider.set_value(state.brightness)
-        self.contrast_slider.set_value(state.contrast)
-        self.sat_slider.set_value(state.saturation)
-        self.scanlines_slider.set_value(state.vhs_scanlines)
+        """Sync all document-level controls from the current tab state.
+        Called when the canvas/tab is first attached and after project load."""
+        st = self._st()
+        if st is None:
+            return
+        # Block signals during bulk sync so we don't trigger cascading updates
+        for sl, attr in [
+            (self.grain_slider,     'film_grain'),
+            (self.ca_slider,        'chromatic_aberration'),
+            (self.bright_slider,    'brightness'),
+            (self.contrast_slider,  'contrast'),
+            (self.sat_slider,       'saturation'),
+            (self.scanlines_slider, 'vhs_scanlines'),
+        ]:
+            sl.set_value(getattr(st, attr, sl.value()))
+
+        # Sync template button highlight
+        self._update_template_buttons()
+
+        # Sync background color preview
+        bg = getattr(st, 'bg_color', (0, 0, 0))
+        q = QColor(*bg) if bg else QColor(0, 0, 0)
+        self._current_bg_color = q
+        self.bg_color_preview.setStyleSheet(
+            f"background:{q.name()}; border:1px solid #555;")
 
     # ── Layer management (called by canvas signal) ─────────────────────────────
 
     def set_canvas(self, canvas, tab_state=None, tab_ref=None):
-        """Store reference to the PreviewCanvas so we can add/remove layers.
-        tab_state : the WorkspaceTab's AppState instance (optional)
-        tab_ref   : the WorkspaceTab itself (optional, used for export flow)
+        """Store reference to the PreviewCanvas and the owning tab.
+
+        tab_state : the WorkspaceTab's AppState instance — becomes the single
+                    source of truth for all document-level settings in this panel.
+        tab_ref   : the WorkspaceTab itself (used for export flow)
+
+        After connecting, refresh_from_state() is called so all document-level
+        controls immediately reflect the tab's state instead of stale defaults.
         """
         self._canvas = canvas
         if tab_state is not None:
@@ -1488,6 +1490,10 @@ class EditorPanel(QWidget):
             self._tab_ref = tab_ref
         canvas.layer_selected.connect(self._on_canvas_layer_selected)
         canvas.layers_changed.connect(self._refresh_layer_list)
+        # Populate document-level controls from the tab state right away.
+        # This ensures the panel reflects the correct document when a new tab
+        # is opened or when the panel is reused after a tab switch.
+        self.refresh_from_state()
 
     def _refresh_layer_list(self):
         """Rebuild the layer list, respecting group hierarchy and collapse state."""
@@ -1548,7 +1554,7 @@ class EditorPanel(QWidget):
             self.layer_list.addItem(item)
 
         # Highlight current selection
-        sel_canvas = self._canvas._sel
+        sel_canvas = self._canvas.selected_layer_index()
         for row in range(self.layer_list.count()):
             it = self.layer_list.item(row)
             if it and it.data(Qt.UserRole + 20) == sel_canvas:
@@ -1588,9 +1594,8 @@ class EditorPanel(QWidget):
         eye_r = self._layer_delegate.eye_rect_for_row(row_rect, indent)
         if eye_r.contains(click_pos):
             if 0 <= canvas_idx < len(self._canvas.layers):
-                l = self._canvas.layers[canvas_idx]
-                l.visible = not l.visible
-                self._canvas.update()
+                cur_vis = self._canvas.layers[canvas_idx].visible
+                self._canvas.set_layer_visibility(canvas_idx, not cur_vis)
                 self._refresh_layer_list()
             return
 
@@ -1615,36 +1620,30 @@ class EditorPanel(QWidget):
         if canvas_idx is None:
             return
         if 0 <= canvas_idx < len(self._canvas.layers):
-            self._canvas._sel = canvas_idx
-            self._canvas.layer_selected.emit(canvas_idx)
-            self._canvas.update()
+            self._canvas.select_layer(canvas_idx)
 
     def _on_rows_moved(self, parent, src_start, src_end, dest_parent, dest_row):
-        """Called after QListWidget's internal drag-drop reorder completes.
-        We read the new list order and reorder the canvas layers to match,
-        then also detect group membership (drop onto group = become child)."""
+        """Called after QListWidget drag-drop reorder completes.
+        Delegates to canvas.reorder_layers() — never mutates _layers or _sel directly."""
         if not hasattr(self, '_canvas'):
             return
 
         count = self.layer_list.count()
-        # Build new canvas layer order from the list items' stored canvas_idx values
-        # (reversed because the list shows top-of-stack first)
         new_order_canvas_indices = []
         for row in range(count):
             it = self.layer_list.item(row)
             if it:
                 new_order_canvas_indices.append(it.data(Qt.UserRole + 20))
 
-        # new_order_canvas_indices is [top … bottom] (list row 0 = highest layer)
-        # canvas._layers[0] = lowest layer, so we reverse
+        # List row 0 = highest layer; canvas._layers[0] = lowest → reverse
         new_canvas_order = list(reversed(new_order_canvas_indices))
-
         old_layers = list(self._canvas.layers)
         new_layers = [old_layers[i] for i in new_canvas_order
                       if 0 <= i < len(old_layers)]
 
-        # Check if the moved row is now adjacent to a group and assign parent
-        # For simplicity: a layer directly below a group row becomes its child
+        # Assign group parent from list adjacency (operates on Layer objects
+        # before handing them to canvas, so this is pure data prep, not a mutation
+        # of canvas internals)
         for row in range(count):
             it = self.layer_list.item(row)
             if not it:
@@ -1653,36 +1652,20 @@ class EditorPanel(QWidget):
             if not (0 <= ci < len(old_layers)):
                 continue
             layer = old_layers[ci]
-
-            # Find the nearest group above this row in the LIST
             parent_group_ci = None
             for above_row in range(row - 1, -1, -1):
                 above_it = self.layer_list.item(above_row)
                 if above_it:
-                    above_ci   = above_it.data(Qt.UserRole + 20)
                     above_kind = (above_it.data(LayerDelegate.KIND_ROLE) or "").lower()
                     if above_kind == "group":
-                        parent_group_ci = above_ci
+                        parent_group_ci = above_it.data(Qt.UserRole + 20)
                         break
                     else:
-                        break   # non-group neighbour above → no parent
-
+                        break
             layer._group_parent = parent_group_ci  # type: ignore[attr-defined]
 
-        self._canvas._layers = new_layers
-        # Update selection to match moved item
-        cur = self.layer_list.currentRow()
-        if cur >= 0:
-            it = self.layer_list.item(cur)
-            if it:
-                new_ci = it.data(Qt.UserRole + 20)
-                # Find where that canvas_idx ended up in the new_layers list
-                for i, l in enumerate(new_layers):
-                    if l is old_layers[new_ci]:
-                        self._canvas._sel = i
-                        break
-        self._canvas.layers_changed.emit()
-        self._canvas.update()
+        # Delegate to canvas authority — pushes undo, updates _sel, emits signals
+        self._canvas.reorder_layers(new_layers)
         self._refresh_layer_list()
 
     def _on_canvas_layer_selected(self, idx: int):
@@ -1876,16 +1859,12 @@ class EditorPanel(QWidget):
     # ── New layer action slots ─────────────────────────────────────────────────
 
     def _duplicate_layer(self):
-        if not hasattr(self, '_canvas'): return
-        layer = self._canvas.selected_layer()
-        if not layer: return
-        import copy
-        new_layer = copy.deepcopy(layer)
-        new_layer.name = layer.name + " copy"
-        new_layer.x += 20; new_layer.y += 20
-        new_layer._pix = None
-        self._canvas.add_layer(new_layer)
-        self._refresh_layer_list()
+        """Duplicate the selected layer via the safe canvas authority method."""
+        if not hasattr(self, '_canvas') or self._canvas is None:
+            return
+        new_layer = self._canvas.duplicate_selected_layer(offset=20)
+        if new_layer is not None:
+            self._refresh_layer_list()
 
     def _rename_layer(self):
         if not hasattr(self, '_canvas'): return
@@ -1914,91 +1893,6 @@ class EditorPanel(QWidget):
     def set_brush_panel(self, bp):
         """Called by MainWindow after BrushPanel is created."""
         self._brush_panel_ref = bp
-
-    def _refresh_palette_ui(self):
-        """Redraw all 5 swatch buttons to match self._palette_colors."""
-        swatch_ss = """
-            QPushButton {{
-                background: {bg};
-                border: 2px solid {border};
-                border-radius: 4px;
-            }}
-            QPushButton:hover {{ border-color: #aabbff; }}
-        """
-        for i, btn in enumerate(self._pal_btns):
-            c = self._palette_colors[i]
-            lum = 0.299*c.red() + 0.587*c.green() + 0.114*c.blue()
-            border = "#999" if lum < 60 else "#444"
-            btn.setStyleSheet(swatch_ss.format(bg=c.name(), border=border))
-            btn.setToolTip(f"Slot {i+1}: {c.name().upper()}  (right-click to edit)")
-
-    def _pal_pick(self, idx: int):
-        """User clicked a palette swatch — set it as the active brush color."""
-        color = self._palette_colors[idx]
-        if self._brush_panel_ref is not None:
-            try:
-                self._brush_panel_ref._wheel.set_color(color)
-                self._brush_panel_ref._on_color_changed(color)
-            except Exception:
-                pass
-
-    def _pal_edit_slot(self, idx: int):
-        """Right-click on a swatch — open color picker to change that slot."""
-        from PySide6.QtWidgets import QColorDialog
-        c = self._palette_colors[idx]
-        new_c = QColorDialog.getColor(c, self, f"Edit Palette Slot {idx+1}")
-        if new_c.isValid():
-            self._palette_colors[idx] = new_c
-            self._refresh_palette_ui()
-
-    def _pal_refresh_from_layer(self):
-        """Extract the 5 dominant colors from the currently selected layer."""
-        if not hasattr(self, '_canvas') or self._canvas is None:
-            return
-        layer = self._canvas.selected_layer()
-        if layer is None or layer.pil_image is None:
-            return
-        try:
-            import math, numpy as np
-            from PIL import Image as PILImage
-            img = layer.pil_image.convert("RGBA")
-            arr = np.array(img, dtype=np.uint8)
-            mask = arr[:, :, 3] >= 30
-            visible = arr[mask]
-            if len(visible) < 5:
-                return
-            step = max(1, len(visible) // 4000)
-            sampled = visible[::step, :3]
-            proxy = PILImage.fromarray(
-                sampled.reshape(1, len(sampled), 3).astype(np.uint8), "RGB")
-            q = proxy.quantize(colors=12, method=PILImage.Quantize.MEDIANCUT)
-            pal = np.array(q.getpalette(), dtype=np.uint8).reshape(-1, 3)
-            counts = np.bincount(
-                np.array(q.getdata(), dtype=np.uint8), minlength=len(pal))
-            colours = []
-            for idx in np.argsort(-counts):
-                if counts[idx] == 0:
-                    continue
-                r, g, b = int(pal[idx, 0]), int(pal[idx, 1]), int(pal[idx, 2])
-                cand = QColor(r, g, b)
-                # Skip near-duplicates
-                too_close = any(
-                    math.sqrt((cand.red()-e.red())**2 +
-                               (cand.green()-e.green())**2 +
-                               (cand.blue()-e.blue())**2) < 30
-                    for e in colours
-                )
-                if not too_close:
-                    colours.append(cand)
-                if len(colours) >= 5:
-                    break
-            # Pad with current slots if fewer than 5 extracted
-            while len(colours) < 5:
-                colours.append(self._palette_colors[len(colours)])
-            self._palette_colors = colours[:5]
-            self._refresh_palette_ui()
-        except Exception as e:
-            pass
 
     # ── Font panel helpers ────────────────────────────────────────────────────
 
@@ -2060,7 +1954,7 @@ class EditorPanel(QWidget):
 
         # Propagate to children if this is a group
         if layer.kind == "group":
-            sel_idx = self._canvas._sel
+            sel_idx = self._canvas.selected_layer_index()
             for child in self._canvas.layers:
                 if getattr(child, '_group_parent', None) == sel_idx:
                     child.locked = new_locked
@@ -2118,7 +2012,7 @@ class EditorPanel(QWidget):
         if not hasattr(self, '_canvas'): return
         l = self._canvas.selected_layer()
         if not l or not l.pil_image: return
-        dw, dh = self._canvas._doc_size.width(), self._canvas._doc_size.height()
+        dw, dh = self._canvas.doc_size().width(), self._canvas.doc_size().height()
         iw, ih = l.pil_image.size
         scale = min(dw / iw, dh / ih)
         nw, nh = int(iw * scale), int(ih * scale)
@@ -2129,7 +2023,7 @@ class EditorPanel(QWidget):
         if not hasattr(self, '_canvas'): return
         l = self._canvas.selected_layer()
         if not l or not l.pil_image: return
-        dw, dh = self._canvas._doc_size.width(), self._canvas._doc_size.height()
+        dw, dh = self._canvas.doc_size().width(), self._canvas.doc_size().height()
         iw, ih = l.pil_image.size
         scale = max(dw / iw, dh / ih)
         nw, nh = int(iw * scale), int(ih * scale)
@@ -2139,7 +2033,7 @@ class EditorPanel(QWidget):
         if not hasattr(self, '_canvas'): return
         l = self._canvas.selected_layer()
         if not l: return
-        dw, dh = self._canvas._doc_size.width(), self._canvas._doc_size.height()
+        dw, dh = self._canvas.doc_size().width(), self._canvas.doc_size().height()
         self._canvas.update_selected_layer(x=(dw-l.w)//2, y=(dh-l.h)//2)
 
     def _layer_color_changed(self, prop: str, v: float):
@@ -2190,13 +2084,12 @@ class EditorPanel(QWidget):
             layer = self._canvas.add_image_layer(path,
                 name=os.path.splitext(os.path.basename(path))[0])
             # Auto-snap to top of canvas, full width
-            dw = self._canvas._doc_size.width()
+            dw = self._canvas.doc_size().width()
             layer.x = 0
             layer.y = 0
             layer.w = dw
             layer.h = 70
-            layer.invalidate()
-            self._canvas.update()
+            self._canvas.invalidate_layer_cache(layer)
             self._refresh_layer_list()
 
     def _add_texture_layer(self):
@@ -2207,15 +2100,14 @@ class EditorPanel(QWidget):
             self, "Select Texture", TEXTURES_DIR,
             "Images (*.png *.jpg *.jpeg)")
         if path:
-            dw = self._canvas._doc_size.width()
-            dh = self._canvas._doc_size.height()
+            dw = self._canvas.doc_size().width()
+            dh = self._canvas.doc_size().height()
             layer = self._canvas.add_image_layer(path,
                 name=os.path.splitext(os.path.basename(path))[0])
             # Full-canvas texture
             layer.x, layer.y, layer.w, layer.h = 0, 0, dw, dh
             layer.opacity = 0.5
-            layer.invalidate()
-            self._canvas.update()
+            self._canvas.invalidate_layer_cache(layer)
             self._refresh_layer_list()
 
     def _add_text_layer(self):
@@ -2233,8 +2125,8 @@ class EditorPanel(QWidget):
         if not hasattr(self, '_canvas'): return
         from app.ui.canvas.layers import Layer
         from PIL import Image as PILImage
-        dw = self._canvas._doc_size.width()
-        dh = self._canvas._doc_size.height()
+        dw = self._canvas.doc_size().width()
+        dh = self._canvas.doc_size().height()
         img = PILImage.new("RGBA", (dw, dh), (0, 0, 0, 0))
         # Count existing paint layers to auto-name
         n = sum(1 for l in self._canvas.layers if l.kind == "paint")
@@ -2247,8 +2139,8 @@ class EditorPanel(QWidget):
         """Create an empty group folder immediately — no dialog."""
         if not hasattr(self, '_canvas'): return
         from app.ui.canvas.layers import Layer
-        dw = self._canvas._doc_size.width()
-        dh = self._canvas._doc_size.height()
+        dw = self._canvas.doc_size().width()
+        dh = self._canvas.doc_size().height()
         n = sum(1 for l in self._canvas.layers if l.kind == "group")
         layer = Layer(kind="group", name=f"Group {n+1}",
                       x=0, y=0, w=dw, h=dh)
@@ -2263,8 +2155,8 @@ class EditorPanel(QWidget):
         from app.ui.canvas.layers import Layer
         col = QColorDialog.getColor(QColor(60, 60, 200), self, "Pick Fill Color")
         if not col.isValid(): return
-        dw = self._canvas._doc_size.width()
-        dh = self._canvas._doc_size.height()
+        dw = self._canvas.doc_size().width()
+        dh = self._canvas.doc_size().height()
         rgb = (col.red(), col.green(), col.blue())
         n = sum(1 for l in self._canvas.layers if l.kind == "fill")
         layer = Layer(kind="fill", name=f"Fill {n+1} ({col.name()})",
@@ -2356,8 +2248,8 @@ class EditorPanel(QWidget):
                     img.putpixel((px,py),(r,g,b,255))
         else:
             img = PILImage.new("RGBA", (w, h), (*layer.fill_color, 255))
-        layer.pil_image = img; layer.invalidate()
-        self._canvas.update()
+        layer.pil_image = img
+        self._canvas.invalidate_layer_cache(layer)
 
     def _change_filter_type(self):
         if not hasattr(self, '_canvas'): return
@@ -2411,17 +2303,17 @@ class EditorPanel(QWidget):
 
     def _delete_selected_layer(self):
         if hasattr(self, '_canvas'):
-            self._canvas.remove_layer(self._canvas._sel)
+            self._canvas.remove_layer(self._canvas.selected_layer_index())
             self._refresh_layer_list()
 
     def _move_layer_up(self):
         if hasattr(self, '_canvas'):
-            self._canvas.move_layer_up(self._canvas._sel)
+            self._canvas.move_layer_up(self._canvas.selected_layer_index())
             self._refresh_layer_list()
 
     def _move_layer_down(self):
         if hasattr(self, '_canvas'):
-            self._canvas.move_layer_down(self._canvas._sel)
+            self._canvas.move_layer_down(self._canvas.selected_layer_index())
             self._refresh_layer_list()
 
     def _toggle_layer_visibility(self):

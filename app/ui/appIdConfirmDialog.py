@@ -1,6 +1,4 @@
 """
-app/ui/appIdConfirmDialog.py
-
 AppID Confirmation Dialog — shown once per game per tab session.
 
 Flow:
@@ -28,21 +26,59 @@ from PySide6.QtWidgets import (
     QSizePolicy, QProgressBar, QWidget,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject
-from PySide6.QtGui  import QFont
+from PySide6.QtGui  import QFont, QColor
 
-from app.services.appIdGetter import search_candidates
+from app.services.appIdGetter import search_candidates, NetworkError
 
 
 # ── async worker ──────────────────────────────────────────────────────────────
 class _SearchWorker(QObject):
-    done = Signal(list)   # list[dict]  {"id": int, "name": str}
+    """
+    Runs search_candidates() on a background QThread.
+
+    Emits done(candidates, error_code, error_message):
+      - error_code is "" on success, or one of:
+        "network" | "timeout" | "ssl" | "no_results"
+      - All UI updates must happen in slots connected to done — never inside run().
+    """
+    done = Signal(list, str, str)   # (candidates, error_code, error_message)
 
     def __init__(self, query: str):
         super().__init__()
         self._q = query
 
     def run(self):
-        self.done.emit(search_candidates(self._q, limit=10))
+        """
+        Executed on the worker thread.  Must NOT touch any Qt widgets.
+        All results are delivered via the done signal.
+        """
+        try:
+            results = search_candidates(self._q, limit=10)
+            if results:
+                self.done.emit(results, "", "")
+            else:
+                self.done.emit([], "no_results", "No Steam matches found.")
+        except NetworkError as exc:
+            msg = str(exc)
+            # Classify the error so the UI can show a helpful message
+            lower = msg.lower()
+            if "ssl" in lower or "certificate" in lower:
+                code = "ssl"
+            elif "timeout" in lower or "timed out" in lower:
+                code = "timeout"
+            else:
+                code = "network"
+            self.done.emit([], code, msg)
+        except Exception as exc:
+            self.done.emit([], "network", str(exc))
+
+
+_ERROR_LABELS = {
+    "ssl":        "SSL / certificate error — network may be restricted.",
+    "timeout":    "Request timed out — check your internet connection.",
+    "network":    "Network error — check your internet connection.",
+    "no_results": "No Steam matches found.",
+}
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -130,6 +166,13 @@ class AppIdConfirmDialog(QDialog):
         self._candidates: List[dict] = []
         self._best: Optional[dict] = None
         self._manual_open = False
+
+        # Thread handles — tracked so we can guard stale signals from
+        # previously cancelled searches arriving after a new one started.
+        self._auto_worker   = None
+        self._auto_thread   = None
+        self._manual_worker = None
+        self._manual_thread = None
 
         self.result_app_id: Optional[int] = None
         self.result_name:   str = ""
@@ -224,6 +267,32 @@ class AppIdConfirmDialog(QDialog):
         search_row.addWidget(search_btn)
         mp.addLayout(search_row)
 
+        # ── Direct numeric AppID entry ─────────────────────────────────────
+        # If the user already knows their AppID (from the Steam store URL),
+        # they can type it here and Confirm becomes available immediately
+        # without any network request.
+        numeric_lbl = QLabel("— or enter AppID directly —")
+        numeric_lbl.setAlignment(Qt.AlignCenter)
+        numeric_lbl.setStyleSheet("color:#444; font-size:11px; padding-top:4px;")
+        mp.addWidget(numeric_lbl)
+
+        numeric_row = QHBoxLayout()
+        numeric_row.addStretch()
+        self._numeric_edit = QLineEdit()
+        self._numeric_edit.setPlaceholderText("e.g.  1971870")
+        self._numeric_edit.setFixedWidth(160)
+        self._numeric_edit.setAlignment(Qt.AlignCenter)
+        self._numeric_edit.textChanged.connect(self._on_numeric_changed)
+        self._numeric_edit.returnPressed.connect(self._apply_numeric)
+        numeric_row.addWidget(self._numeric_edit)
+        self._use_numeric_btn = QPushButton("Use This ID")
+        self._use_numeric_btn.setFixedWidth(100)
+        self._use_numeric_btn.setEnabled(False)
+        self._use_numeric_btn.clicked.connect(self._apply_numeric)
+        numeric_row.addWidget(self._use_numeric_btn)
+        numeric_row.addStretch()
+        mp.addLayout(numeric_row)
+
         self._search_progress = QProgressBar()
         self._search_progress.setRange(0, 0)
         self._search_progress.setFixedHeight(4)
@@ -239,24 +308,67 @@ class AppIdConfirmDialog(QDialog):
 
     # ── auto search ───────────────────────────────────────────────────────────
     def _start_search(self, query: str):
+        if not query:
+            self._progress.setVisible(False)
+            self._status_lbl.setText("No game name — enter AppID manually.")
+            self._status_lbl.setStyleSheet("color:#cc8844;")
+            if not self._manual_open:
+                self._toggle_manual()
+            return
+
+        # Cancel stale in-flight search so its done signal is ignored
+        if self._auto_thread and self._auto_thread.isRunning():
+            self._auto_thread.quit()
+            self._auto_thread.wait(200)
+
         self._progress.setVisible(True)
         self._confirm_btn.setEnabled(False)
 
-        self._worker = _SearchWorker(query)
-        self._thread = QThread()
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_search_done)
-        self._worker.done.connect(self._thread.quit)
-        self._thread.start()
+        worker = _SearchWorker(query)
+        thread = QThread()           # no parent — avoids "Cannot create children
+                                     # for a parent in a different thread" warning
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # QueuedConnection ensures the slot always runs on the main thread,
+        # even though the signal is emitted from the worker thread.
+        worker.done.connect(self._on_auto_done, Qt.QueuedConnection)
+        worker.done.connect(thread.quit, Qt.QueuedConnection)
+        thread.finished.connect(worker.deleteLater)   # worker lives on thread; clean up after
+        thread.finished.connect(thread.deleteLater)   # clean up thread object
+        self._auto_worker = worker
+        self._auto_thread = thread
+        thread.start()
 
-    def _on_search_done(self, candidates: list):
+    def _on_auto_done(self, candidates: list, error_code: str, error_msg: str):
+        """Trampoline: only dispatch if this signal came from the current worker."""
+        # By the time this slot runs (main thread), _auto_worker may have been
+        # replaced by a newer search.  The QueuedConnection guarantees we're on
+        # the main thread, so the comparison is race-free.
+        sender = self.sender()
+        if sender is not self._auto_worker:
+            return
+        self._on_search_done(candidates, error_code, error_msg)
+
+    def _on_search_done(self, candidates: list, error_code: str, error_msg: str):
+        """Called on the main thread via signal — safe to update UI."""
         self._progress.setVisible(False)
         self._candidates = candidates
 
-        if not candidates:
-            self._status_lbl.setText("No results found — use Search Manually.")
-            self._status_lbl.setObjectName("warn")
+        if error_code and error_code != "no_results":
+            # Real network/SSL failure — show a specific message and auto-open
+            # the manual panel so the user can enter an AppID offline.
+            friendly = _ERROR_LABELS.get(error_code, "Search unavailable.")
+            detail   = error_msg[:120] + ("…" if len(error_msg) > 120 else "")
+            self._status_lbl.setText(f"{friendly}\n{detail}")
+            self._status_lbl.setStyleSheet("color:#cc8844;")
+            if not self._manual_open:
+                self._toggle_manual()
+            return
+
+        if error_code == "no_results" or not candidates:
+            self._status_lbl.setText(
+                "No Steam matches found — enter AppID manually or try searching."
+            )
             self._status_lbl.setStyleSheet("color:#cc8844;")
             return
 
@@ -295,30 +407,97 @@ class AppIdConfirmDialog(QDialog):
         q = self._search_edit.text().strip()
         if not q:
             return
+
+        # Pure number → direct AppID, no network call needed
+        if q.isdigit():
+            self._numeric_edit.setText(q)
+            self._apply_numeric()
+            return
+
+        # Cancel any stale manual search
+        if self._manual_thread and self._manual_thread.isRunning():
+            self._manual_thread.quit()
+            self._manual_thread.wait(200)
+
         self._results_list.clear()
         self._search_progress.setVisible(True)
 
-        self._msworker = _SearchWorker(q)
-        self._msthread = QThread()
-        self._msworker.moveToThread(self._msthread)
-        self._msthread.started.connect(self._msworker.run)
-        self._msworker.done.connect(self._on_manual_results)
-        self._msworker.done.connect(self._msthread.quit)
-        self._msthread.start()
+        worker = _SearchWorker(q)
+        thread = QThread()           # no parent — avoids cross-thread parent warning
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # QueuedConnection ensures slot runs on main thread; trampoline guards
+        # against stale signals from a replaced worker arriving out of order.
+        worker.done.connect(self._on_manual_done, Qt.QueuedConnection)
+        worker.done.connect(thread.quit, Qt.QueuedConnection)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._manual_worker = worker
+        self._manual_thread = thread
+        thread.start()
 
-    def _on_manual_results(self, candidates: list):
+    def _on_manual_done(self, candidates: list, error_code: str, error_msg: str):
+        """Trampoline: only dispatch if this signal came from the current worker."""
+        sender = self.sender()
+        if sender is not self._manual_worker:
+            return
+        self._on_manual_results(candidates, error_code, error_msg)
+
+    def _on_manual_results(self, candidates: list, error_code: str, error_msg: str):
+        """Called on the main thread via signal — safe to update UI."""
         self._search_progress.setVisible(False)
         self._results_list.clear()
-        if not candidates:
-            item = QListWidgetItem("No results found.")
-            item.setForeground(Qt.gray)
+
+        if error_code and error_code != "no_results":
+            friendly = _ERROR_LABELS.get(error_code, "Search unavailable.")
+            detail   = error_msg[:120] + ("…" if len(error_msg) > 120 else "")
+            for text, color in [(f"⚠  {friendly}", "#cc8844"), (detail, "#666")]:
+                if text:
+                    item = QListWidgetItem(text)
+                    item.setForeground(QColor(color))
+                    item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+                    self._results_list.addItem(item)
+            return
+
+        if error_code == "no_results" or not candidates:
+            item = QListWidgetItem("No Steam matches found — try a different name.")
+            item.setForeground(QColor("#888"))
             item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
             self._results_list.addItem(item)
             return
+
         for c in candidates:
             item = QListWidgetItem(f"{c['name']}   —   AppID: {c['id']}")
             item.setData(Qt.UserRole, c)
             self._results_list.addItem(item)
+
+    def _on_numeric_changed(self, text: str):
+        """Enable 'Use This ID' as soon as the field contains only digits."""
+        self._use_numeric_btn.setEnabled(text.strip().isdigit() and len(text.strip()) > 0)
+
+    def _apply_numeric(self):
+        """
+        Accept the directly entered numeric AppID without any network lookup.
+        The canonical name is set to the game_name passed into the dialog,
+        since we have no Steam search result to pull a canonical name from.
+        """
+        raw = self._numeric_edit.text().strip()
+        if not raw.isdigit():
+            return
+        app_id = int(raw)
+        synthetic = {
+            "id":   app_id,
+            "name": self._game_name or f"AppID {app_id}",
+        }
+        self._apply_candidate(synthetic)
+        self._status_lbl.setText(f"✔  Using AppID {app_id} (entered manually).")
+        self._status_lbl.setStyleSheet("color:#88cc88;")
+        # Collapse manual panel — user is done
+        if self._manual_open:
+            self._manual_open = False
+            self._manual_panel.setVisible(False)
+            self._manual_btn.setText("Search Manually")
+            self.adjustSize()
 
     def _on_result_picked(self, item: QListWidgetItem):
         c = item.data(Qt.UserRole)
@@ -330,9 +509,40 @@ class AppIdConfirmDialog(QDialog):
             self._manual_btn.setText("Search Manually")
             self.adjustSize()
 
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+    def closeEvent(self, event):
+        """
+        Stop any in-flight search threads before the dialog is destroyed.
+
+        Without this, a running thread can emit its done signal after the
+        dialog widgets are gone, causing a crash or stale UI mutation.
+        We disconnect signals first so the slots are never called on a
+        dead widget, then ask the threads to quit and give them 500 ms.
+        """
+        for worker, thread in [
+            (self._auto_worker,   self._auto_thread),
+            (self._manual_worker, self._manual_thread),
+        ]:
+            if thread and thread.isRunning():
+                if worker:
+                    try: worker.done.disconnect()
+                    except RuntimeError: pass   # already disconnected
+                thread.quit()
+                thread.wait(500)
+        super().closeEvent(event)
+
     # ── confirm ───────────────────────────────────────────────────────────────
     def _confirm(self):
         if self._best:
             self.result_app_id = self._best["id"]
             self.result_name   = self._best["name"]
+            # Persist confirmed mapping so future exports skip this dialog
+            try:
+                from app.services.appIdRegistry import AppIdRegistry
+                AppIdRegistry.shared().register(
+                    self._game_name, self.result_app_id,
+                    canonical=self.result_name,
+                )
+            except Exception:
+                pass   # registry is best-effort; never block export
             self.accept()

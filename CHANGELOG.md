@@ -4,6 +4,44 @@ All notable changes to Steam Grunge Editor are documented here.
 
 ---
 
+## [2.0.0] - 2026-03-12
+
+### Major
+- Complete render pipeline stabilization
+- Unified layer compositing pipeline for preview and export
+- Fixed FX pipeline breaking blend modes
+- Export now matches canvas rendering
+
+### Canvas Interaction
+- Restored real-time layer transforms (move, resize, rotate)
+- Fixed dynamic transform rendering during interaction
+- Fixed viewport pan resetting to (0,0)
+- Middle mouse panning now persists correctly
+
+### Rendering
+- Unified preview and export compositing pipeline
+- Fixed blend modes breaking when global FX enabled
+- Fixed layer compositing with:
+  - VHS
+  - film grain
+  - chromatic aberration
+
+### UI
+- Restored floating context toolbar original functionality
+- Restored contextual color palette behavior
+- Fixed toolbar integration with new canvas pipeline
+
+### Stability
+- Fixed Qt threading issues causing crashes during export
+- Fixed AppState missing fields during export
+- Fixed project save/load identity persistence
+- Fixed cross-thread Qt warnings
+
+### Internal
+- Removed legacy compositor path
+- Unified canvas and export render pipeline
+- Improved render invalidation logic
+
 ## [2.0.0] — 2026-03-10
 
 ### Fixed
