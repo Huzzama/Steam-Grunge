@@ -28,7 +28,7 @@ optdepends=(
     'steam: sync artwork directly to Steam'
 )
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Huzzama/Steam-Grunge/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('b67cfd0592fcd5373d5e678fb5401373df2b6824bbbcfef1483500b863816122  v2.0.0.tar.gz')  
+sha256sums=('b67cfd0592fcd5373d5e678fb5401373df2b6824bbbcfef1483500b863816122  v2.0.0.tar.gz')
 
 prepare() {
     cd "Steam-Grunge-${pkgver}"
