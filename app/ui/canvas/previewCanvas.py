@@ -2399,12 +2399,13 @@ class PreviewCanvas(QWidget):
                 d.text((l.x, l.y), text,
                        fill=(*l.font_color, int(255 * l.opacity)), font=fnt)
                 canvas = self._pil_blend_composite(canvas, t, bm)
+                
         # ── Global post-processing effects on the full composite ─────────────────
         arr = np.array(canvas.convert("RGBA"), dtype=np.float32)
         arr = self._apply_film_grain(arr, getattr(self, "_effects_grain", 0))
         arr = self._apply_chromatic_aberration(arr, getattr(self, "_effects_ca", 0))
         canvas = PILImage.fromarray(arr.clip(0, 255).astype(np.uint8), "RGBA")
-        return canvas.convert("RGB")
+        return canvas  # keep RGBA — caller decides whether to flatten to RGB
 
     # ── helpers ────────────────────────────────────────────────────────────────
     _CURSORS = [

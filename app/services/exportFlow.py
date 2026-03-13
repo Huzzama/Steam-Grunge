@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 # ── filename suffix map ────────────────────────────────────────────────────────
 _SUFFIX: dict[str, str] = {
     "cover":        "{appid}.png",
-    "vhs_cover":    "{appid}p.png",
+    "vhs_cover":    "{appid}.png",
     "wide":         "{appid}p.png",
     "vhs_pile":     "{appid}p.png",    # wide format → same p suffix
     "vhs_cassette": "{appid}p.png",    # wide format → same p suffix
