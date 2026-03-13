@@ -48,6 +48,7 @@ class PreviewCanvas(QWidget):
     layers_changed        = Signal()
     color_picked          = Signal(object)   # emits QColor when color-picker tool samples
     tool_shortcut_pressed = Signal(object)   # emits ToolMode when a key shortcut switches tool
+    zoom_changed          = Signal(int)      # emits zoom % (int) so the zoom slider stays in sync
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -203,6 +204,7 @@ class PreviewCanvas(QWidget):
         """Set zoom factor (0.25–4.0). 1.0 = fit to window."""
         self._zoom_factor = max(0.25, min(4.0, factor))
         self._update_viewport()
+        self.zoom_changed.emit(round(self._zoom_factor * 100))
         self.update()
 
     def set_view_angle(self, angle: float):
@@ -678,6 +680,61 @@ class PreviewCanvas(QWidget):
             img = _P.alpha_composite(img, tint)
         return img
 
+    @staticmethod
+    def _prepare_layer_pil(layer) -> "Optional[Tuple[PILImage.Image, int, int]]":
+        """
+        Shared PIL transform helper used by _draw_with_global_fx and compose_to_pil.
+
+        Returns (rgba_image, paste_x, paste_y) where the image has had:
+          crop → colour adjustments → resize(layer.w, layer.h) → flip → rotate
+
+        paste_x/y are adjusted for rotation expand so the result centres on the
+        original layer rect.  Opacity is pre-baked into the alpha channel.
+
+        Returns None if the layer has no pil_image.
+        Does NOT allocate a full-doc canvas — that is the caller's responsibility.
+        """
+        if not layer.pil_image:
+            return None
+
+        img = layer.pil_image.convert("RGBA")
+
+        # 1. Crop
+        w_src, h_src = img.size
+        cl, ct, cr_px, cb = layer.crop_l, layer.crop_t, layer.crop_r, layer.crop_b
+        if cl or ct or cr_px or cb:
+            img = img.crop((cl, ct,
+                            max(cl + 1, w_src - cr_px),
+                            max(ct + 1, h_src - cb)))
+
+        # 2. Colour adjustments (brightness / contrast / saturation / tint)
+        img = PreviewCanvas._apply_layer_adjustments(img, layer)
+
+        # 3. Resize to layer display dimensions
+        img = img.resize((max(1, layer.w), max(1, layer.h)), PILImage.LANCZOS)
+
+        # 4. Flip
+        if layer.flip_h:
+            img = img.transpose(PILImage.FLIP_LEFT_RIGHT)
+        if layer.flip_v:
+            img = img.transpose(PILImage.FLIP_TOP_BOTTOM)
+
+        # 5. Rotate (expand=True keeps all pixels; paste position re-centred)
+        paste_x, paste_y = layer.x, layer.y
+        rot = getattr(layer, "rotation", 0.0)
+        if rot:
+            img = img.rotate(-rot, expand=True, resample=PILImage.BICUBIC)
+            # Centre the expanded image on the original layer rect
+            paste_x = layer.x + (layer.w - img.width)  // 2
+            paste_y = layer.y + (layer.h - img.height) // 2
+
+        # 6. Bake opacity into alpha
+        if layer.opacity < 1.0:
+            a = img.split()[3].point(lambda px: int(px * layer.opacity))
+            img.putalpha(a)
+
+        return img, paste_x, paste_y
+
     def selected_layer(self) -> Optional[Layer]:
         return self._layers[self._sel] if 0 <= self._sel < len(self._layers) else None
 
@@ -954,33 +1011,44 @@ class PreviewCanvas(QWidget):
             p.rotate(self._view_angle)
             p.translate(-cx, -cy)
 
-        # 1. Background — checkerboard for transparent templates, solid fill otherwise
-        if getattr(self, "_transparent_bg", False):
-            self._draw_checkerboard(p, cr)
+        fx_active = (getattr(self, "_effects_grain", 0) > 0 or
+                     getattr(self, "_effects_ca", 0) > 0)
+
+        interacting = (self._drag_active or self._resize_active or
+                        self._rotate_active or self._pan_active or self._hand_active)
+
+        if fx_active and not interacting:
+            # ── FX path (idle): render scene offscreen, apply FX, draw result ──
+            # Only runs when no interaction is in progress, so the offscreen
+            # QPixmap allocation and numpy pass never slow down drag/rotate.
+            scene_pix = self._render_scene_to_pixmap(cr)
+            scene_pix = self._apply_fx_to_pixmap(scene_pix)
+            p.drawPixmap(cr.topLeft(), scene_pix)
         else:
-            p.fillRect(cr, self._bg_color)
+            # ── Direct paint path ──────────────────────────────────────────────
+            # Used for: no FX, OR any active interaction (drag/rotate/resize/pan).
+            # During interaction this path is always taken — it is the fastest
+            # possible render with zero allocation overhead.
+            # 1. Background
+            if getattr(self, "_transparent_bg", False):
+                self._draw_checkerboard(p, cr)
+            else:
+                p.fillRect(cr, self._bg_color)
 
-        # 2. Template PNG (non-layer, always at bottom e.g. template_cover.png)
-        if self._template_pix:
-            p.drawPixmap(cr, self._template_pix)
+            # 2. Template PNG
+            if self._template_pix:
+                p.drawPixmap(cr, self._template_pix)
 
-        # 3. Filter-composed overlay (grain, scratches, color etc.)
-        if self._bg_pix:
-            p.drawPixmap(cr, self._bg_pix)
+            # 3. Filter-composed overlay
+            if self._bg_pix:
+                p.drawPixmap(cr, self._bg_pix)
 
-        # 4. Layers — group layers are pure UI containers, never rendered on canvas
-        p.save(); p.setClipRect(cr)
-        for i, layer in enumerate(self._layers):
-            if layer.visible and layer.kind != "group":
-                self._paint_layer(p, layer)
-        p.restore()
-
-        # 5. Global post-processing effects (Film Grain + Chromatic Aberration)
-        #    We render the scene into an offscreen QPixmap at doc resolution,
-        #    apply effects to the full composite, then draw the result scaled.
-        if (getattr(self, "_effects_grain", 0) > 0 or
-                getattr(self, "_effects_ca", 0) > 0):
-            self._draw_with_global_fx(p, cr)
+            # 4. Layers
+            p.save(); p.setClipRect(cr)
+            for layer in self._layers:
+                if layer.visible and layer.kind != "group":
+                    self._paint_layer(p, layer)
+            p.restore()
 
         # canvas border
         p.setPen(QPen(QColor(55,55,55), 1))
@@ -1174,6 +1242,9 @@ class PreviewCanvas(QWidget):
             self._bg_color.rgb(),
             id(self._template_pix),
             id(self._bg_pix),
+            self._zoom_factor,
+            self._ox,
+            self._oy,
             layer_sig,
         )
 
@@ -1243,124 +1314,86 @@ class PreviewCanvas(QWidget):
         ).clip(0, 255).astype(_np.uint8)
         return _PIL.fromarray(result, "RGBA")
 
-    def _draw_with_global_fx(self, painter: QPainter, cr: QRect):
+    def _render_scene_to_pixmap(self, cr: QRect) -> QPixmap:
         """
-        Render the entire scene into a doc-resolution offscreen PIL image,
-        apply Film Grain and Chromatic Aberration to the full composite,
-        then draw the result scaled into cr.
-        Called only when effects strength > 0.
-
-        PERFORMANCE: result is cached in _fx_cache.  The cache key captures
-        all scene inputs; if nothing changed, the cached QPixmap is reused
-        and no PIL/NumPy work is done.  During active drag/resize we skip the
-        FX overdraw entirely so the live QPainter layer paint (step 4) stays
-        visible.  The FX cache is rebuilt on mouseRelease.
+        Render the scene (background + template + layers) into an offscreen
+        QPixmap of exactly cr.size() using the normal Qt paint pipeline.
+        This is the ONLY place the scene is rendered when FX are active.
+        FX are applied afterwards by _apply_fx_to_pixmap — never here.
         """
-        from PIL import Image as _PILFx
+        pix = QPixmap(cr.size())
+        pix.fill(Qt.transparent)
+        p2 = QPainter(pix)
+        p2.setRenderHint(QPainter.SmoothPixmapTransform)
+        p2.setRenderHint(QPainter.Antialiasing)
 
-        # ── Fast path during interaction: let live _paint_layer draw stand ─────
-        # paintEvent step 4 already drew every layer with current geometry.
-        # Drawing _fx_cache here would overwrite that live frame with a stale
-        # pre-drag snapshot.  Return immediately; cache rebuilds on release.
+        # Translate so doc coords map into the pixmap (cr offset removed)
+        p2.translate(-cr.x(), -cr.y())
+
+        # 1. Background
+        if getattr(self, "_transparent_bg", False):
+            self._draw_checkerboard(p2, cr)
+        else:
+            p2.fillRect(cr, self._bg_color)
+
+        # 2. Template PNG
+        if self._template_pix:
+            p2.drawPixmap(cr, self._template_pix)
+
+        # 3. Filter-composed overlay
+        if self._bg_pix:
+            p2.drawPixmap(cr, self._bg_pix)
+
+        # 4. Layers — identical call to the direct path
+        p2.save(); p2.setClipRect(cr)
+        for layer in self._layers:
+            if layer.visible and layer.kind != "group":
+                self._paint_layer(p2, layer)
+        p2.restore()
+
+        p2.end()
+        return pix
+
+    def _apply_fx_to_pixmap(self, pix: QPixmap) -> QPixmap:
+        """
+        Apply Film Grain and Chromatic Aberration to a QPixmap in-place
+        (returns a new QPixmap).  Uses a cached result keyed on effect strengths
+        + a hash of the source pixels so repeated calls with the same frame are
+        free.  During active interaction (drag/resize/rotate) the previous cached
+        result is returned immediately — effects rebuild on mouseRelease.
+        """
+        grain = getattr(self, "_effects_grain", 0)
+        ca    = getattr(self, "_effects_ca",    0)
+        if grain <= 0 and ca <= 0:
+            return pix
+
+        # During interaction return stale cache to keep sliders fast
         if self._drag_active or self._resize_active or self._rotate_active:
-            return
+            if self._fx_cache is not None:
+                return self._fx_cache
+            return pix
 
-        # ── Cache hit: nothing changed, reuse ─────────────────────────────────
+        # Cache key: effect strengths + scene state (layer positions etc.)
         cur_key = self._fx_cache_key_current()
         if self._fx_cache is not None and cur_key == self._fx_cache_key:
-            painter.setOpacity(1.0)
-            painter.setCompositionMode(
-                QPainter.CompositionMode.CompositionMode_SourceOver)
-            painter.drawPixmap(cr, self._fx_cache)
-            return
+            return self._fx_cache
 
-        # ── Cache miss: rebuild full composite ────────────────────────────────
-        dw, dh = self._doc_size.width(), self._doc_size.height()
-
-        r, g, b = self._bg_color.red(), self._bg_color.green(), self._bg_color.blue()
-        if getattr(self, "_transparent_bg", False):
-            comp = _PILFx.new("RGBA", (dw, dh), (0, 0, 0, 0))
-        else:
-            comp = _PILFx.new("RGBA", (dw, dh), (r, g, b, 255))
-
-        # Template and bg overlay are always SourceOver — no blend_mode attribute
-        if self._template_pix and not self._template_pix.isNull():
-            tpl = _qpixmap_to_pil(self._template_pix).convert("RGBA").resize(
-                (dw, dh), _PILFx.LANCZOS)
-            comp = _PILFx.alpha_composite(comp, tpl)
-
-        if self._bg_pix and not self._bg_pix.isNull():
-            bg = _qpixmap_to_pil(self._bg_pix).convert("RGBA").resize(
-                (dw, dh), _PILFx.LANCZOS)
-            comp = _PILFx.alpha_composite(comp, bg)
-
-        for l in self._layers:
-            if not l.visible or l.kind == "group":
-                continue
-            bm = getattr(l, "blend_mode", "normal") or "normal"
-            if l.is_image_like and l.pil_image:
-                try:
-                    img = l.pil_image.convert("RGBA")
-                    # Apply crop (same logic as _get_pix)
-                    w_src, h_src = img.size
-                    cl, ct, cr_px, cb = l.crop_l, l.crop_t, l.crop_r, l.crop_b
-                    if cl or ct or cr_px or cb:
-                        img = img.crop((cl, ct,
-                                        max(cl + 1, w_src - cr_px),
-                                        max(ct + 1, h_src - cb)))
-                    # Apply per-layer colour adjustments so FX composite
-                    # matches the normal (non-FX) render path exactly.
-                    img = self._apply_layer_adjustments(img, l)
-                    img = img.resize((max(1, l.w), max(1, l.h)), _PILFx.LANCZOS)
-                    if l.opacity < 1.0:
-                        a = img.split()[3].point(lambda px: int(px * l.opacity))
-                        img.putalpha(a)
-                    tmp = _PILFx.new("RGBA", (dw, dh), (0, 0, 0, 0))
-                    tmp.paste(img, (l.x, l.y), img)
-                    comp = self._pil_blend_composite(comp, tmp, bm)
-                except Exception:
-                    pass
-            elif l.kind == "fill":
-                fill_img = _PILFx.new("RGBA", (max(1, l.w), max(1, l.h)),
-                                      (*l.fill_color, int(255 * l.opacity)))
-                tmp = _PILFx.new("RGBA", (dw, dh), (0, 0, 0, 0))
-                tmp.paste(fill_img, (l.x, l.y), fill_img)
-                comp = self._pil_blend_composite(comp, tmp, bm)
-            elif l.kind == "text":
-                from PIL import ImageDraw as _IDraw, ImageFont as _IFont
-                t = _PILFx.new("RGBA", (dw, dh), (0, 0, 0, 0))
-                d = _IDraw.Draw(t)
-                try:
-                    fp = os.path.join(FONTS_DIR, l.font_name)
-                    fnt = _IFont.truetype(fp, l.font_size)
-                except Exception:
-                    try:    fnt = _IFont.load_default(size=l.font_size)
-                    except: fnt = _IFont.load_default()
-                text = l.text.upper() if l.font_uppercase else l.text
-                d.text((l.x, l.y), text,
-                       fill=(*l.font_color, int(255 * l.opacity)), font=fnt)
-                comp = self._pil_blend_composite(comp, t, bm)
-
-        arr = np.array(comp, dtype=np.float32)
-        arr = self._apply_film_grain(arr, self._effects_grain)
-        arr = self._apply_chromatic_aberration(arr, self._effects_ca)
-        comp = _PILFx.fromarray(arr.clip(0, 255).astype(np.uint8), "RGBA")
-
-        # Convert via QImage (avoids PNG encode/decode round-trip)
-        arr_out = np.ascontiguousarray(np.array(comp, dtype=np.uint8))
-        h_out, w_out = arr_out.shape[:2]
+        # Convert QPixmap → numpy array (no file I/O)
         from PySide6.QtGui import QImage
-        qi = QImage(arr_out.data, w_out, h_out,
-                    w_out * 4, QImage.Format.Format_RGBA8888).copy()
-        out_pix = QPixmap.fromImage(qi)
+        qi  = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+        w, h = qi.width(), qi.height()
+        arr = np.frombuffer(qi.bits(), dtype=np.uint8).reshape((h, w, 4)).copy().astype(np.float32)
 
-        self._fx_cache     = out_pix
+        arr = self._apply_film_grain(arr, grain)
+        arr = self._apply_chromatic_aberration(arr, ca)
+
+        arr_out = np.ascontiguousarray(arr.clip(0, 255).astype(np.uint8))
+        qi_out  = QImage(arr_out.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
+        result  = QPixmap.fromImage(qi_out)
+
+        self._fx_cache     = result
         self._fx_cache_key = cur_key
-
-        painter.setOpacity(1.0)
-        painter.setCompositionMode(
-            QPainter.CompositionMode.CompositionMode_SourceOver)
-        painter.drawPixmap(cr, out_pix)
+        return result
 
     def _paint_layer(self, p: QPainter, l: Layer):
         wr = self._layer_wrect(l)
@@ -2341,22 +2374,12 @@ class PreviewCanvas(QWidget):
             if l.kind == "group": continue
             bm = getattr(l, "blend_mode", "normal") or "normal"
             if l.is_image_like and l.pil_image:
-                img = l.pil_image.convert("RGBA")
-                # Apply crop
-                w_src, h_src = img.size
-                cl, ct, cr_px, cb = l.crop_l, l.crop_t, l.crop_r, l.crop_b
-                if cl or ct or cr_px or cb:
-                    img = img.crop((cl, ct,
-                                    max(cl + 1, w_src - cr_px),
-                                    max(ct + 1, h_src - cb)))
-                # Apply per-layer colour adjustments for export parity
-                img = self._apply_layer_adjustments(img, l)
-                img = img.resize((max(1, l.w), max(1, l.h)), PILImage.LANCZOS)
-                a = img.split()[3].point(lambda p: int(p * l.opacity))
-                img.putalpha(a)
-                tmp = PILImage.new("RGBA", (dw, dh), (0, 0, 0, 0))
-                tmp.paste(img, (l.x, l.y), img)
-                canvas = self._pil_blend_composite(canvas, tmp, bm)
+                result = self._prepare_layer_pil(l)
+                if result:
+                    img, px, py = result
+                    tmp = PILImage.new("RGBA", (dw, dh), (0, 0, 0, 0))
+                    tmp.paste(img, (px, py), img)
+                    canvas = self._pil_blend_composite(canvas, tmp, bm)
             elif l.kind == "fill":
                 fill_img = PILImage.new("RGBA", (max(1, l.w), max(1, l.h)),
                                         (*l.fill_color, int(255 * l.opacity)))

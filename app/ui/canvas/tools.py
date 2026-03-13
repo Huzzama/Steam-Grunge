@@ -46,7 +46,7 @@ def handle_press(canvas: "PreviewCanvas", e: QMouseEvent):
     # Zoom tool
     if canvas._tool == TM.ZOOM and e.button() in (Qt.LeftButton, Qt.RightButton):
         zoom_in = (e.button() == Qt.LeftButton and
-                   not (e.modifiers() & Qt.ShiftModifier))
+                not (e.modifiers() & Qt.ShiftModifier))
         step = 1.25 if zoom_in else (1.0 / 1.25)
         canvas.set_zoom(canvas._zoom_factor * step)
         return

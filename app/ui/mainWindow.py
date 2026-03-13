@@ -745,6 +745,8 @@ class MainWindow(QMainWindow):
         # Mark project dirty whenever any tab's canvas changes
         self.tab_manager.current_tab().preview_canvas.layers_changed.connect(
             self._mark_dirty)
+        self.tab_manager.current_tab().preview_canvas.zoom_changed.connect(
+            self._on_canvas_zoom_changed)
         self.tab_manager.current_tab().editor_panel.settings_changed.connect(
             self._mark_dirty)
 
@@ -949,9 +951,21 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(right_w)
 
     def _on_zoom_changed(self, val: int):
+        # Guard: if the canvas triggered this update don't call set_zoom again
+        if getattr(self, '_zoom_slider_updating', False):
+            return
         self._zoom_pct_label.setText(f"{val}%")
         if hasattr(self, 'preview_canvas'):
             self.preview_canvas.set_zoom(val / 100.0)
+
+    def _on_canvas_zoom_changed(self, pct: int):
+        """Keep the zoom slider in sync when wheel/tool changes the zoom."""
+        self._zoom_slider_updating = True
+        try:
+            self._zoom_slider.setValue(max(25, min(300, pct)))
+            self._zoom_pct_label.setText(f"{pct}%")
+        finally:
+            self._zoom_slider_updating = False
 
     def _zoom_reset(self):
         self._zoom_slider.setValue(100)
