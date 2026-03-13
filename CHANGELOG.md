@@ -4,6 +4,19 @@ All notable changes to Steam Grunge Editor are documented here.
 
 ---
 
+## v2.0.0 2026-03-13
+
+### Fixed
+- Fixed inconsistent Steam artwork syncing across games that use hashed `librarycache` subfolders
+- Improved Steam sync reliability through recursive target discovery and safer write handling
+- Fixed transparency preservation for PNG-based artwork during export and Steam sync
+- Improved sync result reporting to better distinguish full, partial, and grid-only sync outcomes
+
+### Improved
+- More robust Steam `librarycache` target classification by filename
+- Better handling of mixed Steam cache layouts across different games
+
+
 ## [2.0.0] - 2026-03-12
 
 ### Major
