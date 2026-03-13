@@ -10,7 +10,7 @@ pkgbase = steam-grunge-editor
 	depends = python-pip
 	depends = python-virtualenv
 	depends = libgl
-	source = steam-grunge-editor-1.0.0.tar.gz::https://github.com/Huzzama/Steam-Grunge/archive/refs/tags/v1.0.0.tar.gz
+	source = steam-grunge-editor-1.0.0.tar.gz::https://github.com/Huzzama/Steam-Grunge/archive/refs/tags/v2.0.0.tar.gz
 	sha256sums = SKIP
 
 pkgname = steam-grunge-editor
