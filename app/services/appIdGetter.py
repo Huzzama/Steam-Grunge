@@ -36,8 +36,6 @@ class SearchResult:
         return bool(self.candidates)
 
 
-# ── Legacy exception (callers that already catch NetworkError still work) ──────
-
 class NetworkError(Exception):
     """Raised by search_candidates() for network/SSL/timeout failures."""
 
@@ -57,7 +55,6 @@ def _fetch_raw(query: str, timeout: int) -> list:
     url     = _STORE_SEARCH.format(query=encoded)
     headers = {"User-Agent": _UA}
 
-    # ── Strategy 1: requests + certifi ────────────────────────────────────
     try:
         import requests as _req
 
@@ -66,7 +63,7 @@ def _fetch_raw(query: str, timeout: int) -> list:
             import certifi
             verify = certifi.where()
         except ImportError:
-            pass   # no certifi — let requests use its own bundle
+            pass   
 
         resp = _req.get(url, headers=headers, timeout=timeout, verify=verify)
         resp.raise_for_status()
