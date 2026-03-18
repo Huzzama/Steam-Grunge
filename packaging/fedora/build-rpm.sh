@@ -1,10 +1,11 @@
+#!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
 # build-rpm.sh — Prepares the rpmbuild tree and builds the RPM.
 # Run this from the repository root.
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VERSION=$(cat "$REPO_ROOT/VERSION")
 export APP_VERSION="$VERSION"
 
@@ -39,7 +40,7 @@ cp "$REPO_ROOT/app/assets/icon.png" \
 
 # ── 4. Copy spec file ─────────────────────────────────────────────────────────
 echo "[4/5] Installing spec file..."
-cp "$REPO_ROOT/packaging/rpm/steam-grunge-editor.spec" \
+cp "$REPO_ROOT/packaging/fedora/steam-grunge-editor.spec" \
    "$RPMBUILD_ROOT/SPECS/"
 
 # ── 5. Build the RPM ──────────────────────────────────────────────────────────
