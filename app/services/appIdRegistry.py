@@ -1,21 +1,3 @@
-"""
-Persistent registry that maps game names → confirmed Steam AppIDs.
-
-Survives application restarts so users never need to re-confirm the same
-game twice. Stored as a simple JSON file in DATA_DIR.
-
-Thread-safety:
-  All mutations are protected by a threading.Lock, so background workers
-  can call register() concurrently without corruption.
-
-Usage:
-    from app.services.appIdRegistry import AppIdRegistry
-
-    reg = AppIdRegistry()
-    reg.register("Resident Evil 4", 2050650, canonical="Resident Evil 4")
-
-    app_id = reg.lookup("Resident Evil 4")   # → 2050650 or None
-"""
 from __future__ import annotations
 
 import json
@@ -45,22 +27,17 @@ class AppIdRegistry:
         from app.config import DATA_DIR
         self._path = path or os.path.join(DATA_DIR, "appid_registry.json")
         self._lock = threading.Lock()
-        self._data: dict = {}   # normalized_name → {"id": int, "canonical": str}
+        self._data: dict = {} 
         self._load()
 
     # ── Public API ────────────────────────────────────────────────────────────
     def lookup(self, game_name: str) -> Optional[int]:
-        """
-        Return the confirmed AppID for *game_name*, or None if unknown.
-        Lookup is case-insensitive and strips leading/trailing whitespace.
-        """
         key = self._normalize(game_name)
         with self._lock:
             entry = self._data.get(key)
             return entry["id"] if entry else None
 
     def lookup_canonical(self, game_name: str) -> Optional[str]:
-        """Return the canonical Steam name for *game_name*, if known."""
         key = self._normalize(game_name)
         with self._lock:
             entry = self._data.get(key)
@@ -68,11 +45,6 @@ class AppIdRegistry:
 
     def register(self, game_name: str, app_id: int,
                  canonical: Optional[str] = None):
-        """
-        Persist a confirmed game_name → app_id mapping.
-        If *canonical* is given, the Steam-canonical name is stored too.
-        Overwrites any previous mapping for the same normalized name.
-        """
         key = self._normalize(game_name)
         with self._lock:
             self._data[key] = {
@@ -82,7 +54,6 @@ class AppIdRegistry:
             self._save_unlocked()
 
     def remove(self, game_name: str):
-        """Remove a mapping (e.g. if the user selected the wrong game)."""
         key = self._normalize(game_name)
         with self._lock:
             if key in self._data:
@@ -90,7 +61,6 @@ class AppIdRegistry:
                 self._save_unlocked()
 
     def all_entries(self) -> dict:
-        """Return a snapshot of {normalized_name: {id, canonical}} for UIs."""
         with self._lock:
             return dict(self._data)
 
@@ -115,7 +85,6 @@ class AppIdRegistry:
             self._data = {}
 
     def _save_unlocked(self):
-        """Must be called with self._lock held."""
         try:
             os.makedirs(os.path.dirname(self._path), exist_ok=True)
             tmp = self._path + ".tmp"

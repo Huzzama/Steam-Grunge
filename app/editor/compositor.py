@@ -6,7 +6,7 @@ from app.config import (
     PLATFORM_BARS_DIR, FONTS_DIR, TEMPLATES_DIR
 )
 from app.filters import color as color_filters, vhs as vhs_filters
-from app.filters.distressed import apply_film_grain
+
 
 
 def compose(state) -> Image.Image:
@@ -27,7 +27,7 @@ def compose(state) -> Image.Image:
         img = img.convert("RGBA")
         img = Image.alpha_composite(img, tpl).convert("RGB")
 
-    # 3. Base artwork (if set)
+    # 3. Base artwork 
     if state.base_image:
         art = state.base_image.copy().convert("RGB").resize(size, Image.LANCZOS)
         img = Image.blend(img, art, alpha=1.0)
@@ -37,8 +37,7 @@ def compose(state) -> Image.Image:
     img = color_filters.apply_contrast(img, state.contrast)
     img = color_filters.apply_saturation(img, state.saturation)
 
-    # 5. Film grain only (scratches/dust/edge removed)
-    img = apply_film_grain(img, state.film_grain)
+
 
     # 6. VHS effects
     img = vhs_filters.apply_chromatic_aberration(img, state.chromatic_aberration)

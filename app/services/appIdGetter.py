@@ -1,18 +1,3 @@
-"""
-appIdGetter.py  —  Steam AppID lookup for Steam Grunge Editor.
-
-Robust HTTP strategy (in order):
-  1. requests + certifi  (best; works in all packaging scenarios incl. macOS)
-  2. urllib + SSL disabled (last-resort fallback for stripped environments)
-
-Structured error codes — never collapses failures silently into []:
-  "no_results"  — request succeeded, Steam returned empty list
-  "timeout"     — request timed out
-  "ssl"         — SSL certificate validation failed
-  "http"        — HTTP 4xx/5xx
-  "network"     — DNS / connection refused / other transport error
-  "parse"       — response JSON malformed
-"""
 from __future__ import annotations
 
 import json
