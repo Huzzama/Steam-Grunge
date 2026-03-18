@@ -1,39 +1,3 @@
-"""
-Bulk Steam sync with change detection.
-
-Architecture
-------------
-Planning and execution are strictly separated:
-
-  BulkSyncPlanner.plan(export_root)
-    → Scans export folders, resolves AppIDs from AppIdRegistry, checks
-      SyncManifest, classifies each asset into one of:
-        "new"         → never synced
-        "changed"     → synced before but file has changed
-        "unchanged"   → synced, hash matches — skip by default
-        "missing_id"  → game name not in registry
-
-  BulkSyncExecutor.run(jobs, steam_id, userdata_path, on_progress)
-    → Executes only the supplied jobs, records results to SyncManifest
-      and AppIdRegistry, calls on_progress(job) after each job.
-
-This separation means the UI can show the plan before anything touches
-Steam, and let the user force-include unchanged assets if desired.
-
-Usage (from Qt)
----------------
-    from app.services.bulkSync import BulkSyncPlanner, BulkSyncExecutor
-
-    planner = BulkSyncPlanner()
-    jobs = planner.plan()
-
-    # Filter as desired
-    to_run = [j for j in jobs if j.status in ("new", "changed")]
-
-    executor = BulkSyncExecutor()
-    executor.run(to_run, steam_id, userdata_path,
-                 on_progress=lambda j: print(j))
-"""
 from __future__ import annotations
 
 import os
@@ -50,18 +14,6 @@ from app.services.steamSync      import sync_artwork, find_steam_userdata
 
 @dataclass
 class BulkSyncJob:
-    """
-    Represents a single asset to be (potentially) synced to Steam.
-
-    Status values
-    -------------
-    "new"         — file exists, never synced
-    "changed"     — file changed since last successful sync
-    "unchanged"   — file unchanged — skip by default
-    "missing_id"  — no AppID found in registry for this game
-    "ok"          — sync completed successfully  (set by executor)
-    "error"       — sync failed                 (set by executor)
-    """
     game_name:  str
     template:   str
     file_path:  str
@@ -94,21 +46,6 @@ _TEMPLATE_LABELS = {
 
 
 class BulkSyncPlanner:
-    """
-    Scans exported PNG files under *export_root* and builds a list of
-    BulkSyncJob objects, one per (game, template) pair found.
-
-    File naming convention (set by exportFlow.py):
-        <export_root>/<template>/<appid>*.png   or
-        <export_root>/<template>/<appid>_<suffix>.png
-
-    Because the filename already encodes the AppID, we also accept
-    manually placed files — as long as the filename starts with a run
-    of digits we treat that as the AppID and skip registry lookup for it.
-
-    Otherwise we scan the registry by game_name inferred from the file.
-    """
-
     def __init__(
         self,
         export_root: Optional[str] = None,
@@ -121,15 +58,6 @@ class BulkSyncPlanner:
         self._manifest = manifest or SyncManifest.shared()
 
     def plan(self, game_name_filter: Optional[str] = None) -> List[BulkSyncJob]:
-        """
-        Scan all exported assets and return a BulkSyncJob for each one.
-
-        Asset identification order (most → least reliable):
-          1. Numeric filename stem → AppID from registry by canonical name
-          2. Manifest record      → app_id stored from a previous sync
-          3. Registry lookup      → game name stem → app_id
-          4. Filename heuristic   → pure digit prefix treated as raw app_id
-        """
         jobs: List[BulkSyncJob] = []
 
         for folder_name, template in _FOLDER_TO_TEMPLATE.items():
@@ -139,14 +67,12 @@ class BulkSyncPlanner:
 
             for png_path in sorted(folder.glob("*.png")):
                 file_str = str(png_path)
-                stem     = png_path.stem   # e.g. "1971870" or "Cyberpunk 2077_cover"
+                stem     = png_path.stem   
 
                 # ── Identify game_name and app_id ─────────────────────────
                 app_id:    Optional[int] = None
                 game_name: str           = stem
 
-                # 1. Check sync manifest — most reliable if the file was
-                #    synced before: manifest stores both game_name and app_id.
                 manifest_match = None
                 for entry in self._manifest.all_entries():
                     if (entry.get("template") == template and
@@ -159,8 +85,6 @@ class BulkSyncPlanner:
                     game_name = manifest_match.get("game_name", stem)
                     app_id    = manifest_match.get("app_id")
 
-                # 2. Pure numeric stem → use as app_id directly, look up
-                #    canonical name from registry if available.
                 if app_id is None:
                     numeric_prefix = stem.split("_")[0] if "_" in stem else stem
                     if numeric_prefix.isdigit():
@@ -168,8 +92,7 @@ class BulkSyncPlanner:
                         canonical = self._registry.lookup_canonical(stem) or None
                         game_name = canonical or stem
 
-                # 3. Registry lookup by stem (non-numeric filenames like
-                #    "Resident_Evil_4_cover").
+
                 if app_id is None:
                     app_id = self._registry.lookup(stem)
 
@@ -199,13 +122,10 @@ class BulkSyncPlanner:
     def plan_for_tab_exports(
         self,
         game_name: str,
-        exports: dict,          # {template: absolute_path}
+        exports: dict,          
         app_id:  int,
     ) -> List[BulkSyncJob]:
-        """
-        Build a plan from a specific tab's exports dict (used by single-tab sync).
-        Always treats each asset as "new" or "changed" — no unchanged filtering.
-        """
+
         jobs = []
         for template, path in exports.items():
             if not path or not os.path.isfile(path):
@@ -228,13 +148,6 @@ class BulkSyncPlanner:
 # ── BulkSyncExecutor ─────────────────────────────────────────────────────────
 
 class BulkSyncExecutor:
-    """
-    Executes a list of BulkSyncJob objects against Steam.
-
-    Runs synchronously — wrap in QThread for UI use.
-    Calls on_progress(job) after each job (job.status updated to "ok"/"error").
-    """
-
     def __init__(
         self,
         registry: Optional[AppIdRegistry] = None,
@@ -251,15 +164,6 @@ class BulkSyncExecutor:
         on_progress: Optional[Callable[[BulkSyncJob], None]] = None,
         force: bool = False,
     ) -> List[BulkSyncJob]:
-        """
-        Execute *jobs*, updating each job's status in-place.
-
-        Parameters
-        ----------
-        force : if True, run even "unchanged" jobs.
-
-        Returns the same list with statuses updated.
-        """
         if userdata_path is None:
             userdata_path = find_steam_userdata()
 
