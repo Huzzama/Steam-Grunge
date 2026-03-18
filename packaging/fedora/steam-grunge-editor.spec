@@ -5,13 +5,17 @@
 # No Python, pip, or compilation required on the build or target machine.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Disable debug/debugsource packages — PyInstaller binary has no build-time
+# debug info. Without this rpmbuild fails: "Empty %files debugsourcefiles.list"
+%global debug_package %{nil}
+
 Name:           steam-grunge-editor
 Version:        %{getenv:APP_VERSION}
 Release:        1%{?dist}
 Summary:        A grunge-style editor for Steam artwork and assets
 
 License:        MIT
-URL:           https://github.com/Huzzama/Steam-Grunge
+URL:            https://github.com/youruser/steam-grunge-editor
 
 # This package installs a precompiled binary — no build steps needed.
 BuildArch:      x86_64
@@ -84,5 +88,5 @@ install -Dm644 %{SOURCE2} \
 
 # ── Changelog ─────────────────────────────────────────────────────────────────
 %changelog
-* %(date "+%a %b %d %Y") Packager <Huzzama> - %{version}-1
+* %(date "+%a %b %d %Y") Packager <you@example.com> - %{version}-1
 - Initial RPM release
