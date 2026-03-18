@@ -108,8 +108,8 @@ jobs:
 
       - name: Build RPM
         run: |
-          chmod +x packaging/rpm/build-rpm.sh
-          bash packaging/rpm/build-rpm.sh
+          chmod +x packaging/fedora/build-rpm.sh
+          bash packaging/fedora/build-rpm.sh
 
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
