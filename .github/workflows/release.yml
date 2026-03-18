@@ -12,8 +12,11 @@ env:
   VERSION: ${{ github.ref_name }}
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1: AppImage + .deb  (Ubuntu 22.04)
+  # ─────────────────────────────────────────────────────────────────────────────
   build-linux:
-    name: Build Linux Packages
+    name: Build Linux Packages (AppImage + deb)
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout source
@@ -48,12 +51,108 @@ jobs:
           chmod +x packaging/debian/build-deb.sh
           bash packaging/debian/build-deb.sh
 
-      - name: Generate checksums
+      # Upload artifacts so the release job can collect all checksums together
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: packaging/appimage/Steam_Grunge_Editor-*.AppImage
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: packaging/debian/steam-grunge-editor_*.deb
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2: RPM  (Fedora container — produces correct .fcXX dist tag)
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-rpm:
+    name: Build RPM (Fedora)
+    runs-on: ubuntu-22.04
+    container:
+      image: fedora:41
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Write VERSION file
+        run: echo "${VERSION#v}" > VERSION
+
+      - name: Install build tools
+        run: dnf install -y rpm-build rpmdevtools python3 python3-pip imagemagick wget
+
+      - name: Generate multi-size icons
         run: |
+          for size in 16 32 48 64 128 256; do
+            mkdir -p packaging/shared/icons/${size}x${size}
+            convert app/assets/icon.png -resize ${size}x${size} \
+              packaging/shared/icons/${size}x${size}/steam-grunge-editor.png
+          done
+
+      - name: Build PyInstaller binary
+        run: |
+          pip3 install -r requirements.txt pyinstaller
+          pyinstaller \
+            --onefile \
+            --windowed \
+            --name "steam-grunge-editor" \
+            --distpath dist/ \
+            --add-data "app/assets:assets" \
+            --hidden-import "PySide6.QtCore" \
+            --hidden-import "PySide6.QtGui" \
+            --hidden-import "PySide6.QtWidgets" \
+            --collect-all "PySide6" \
+            app/main.py
+
+      - name: Build RPM
+        run: |
+          chmod +x packaging/rpm/build-rpm.sh
+          bash packaging/rpm/build-rpm.sh
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: ~/rpmbuild/RPMS/**/*.rpm
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 3: Collect all artifacts, generate checksums, publish release
+  # ─────────────────────────────────────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [build-linux, build-rpm]
+
+    steps:
+      - name: Download AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: appimage
+          path: dist/
+
+      - name: Download deb
+        uses: actions/download-artifact@v4
+        with:
+          name: deb
+          path: dist/
+
+      - name: Download RPM
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm
+          path: dist/
+
+      - name: Generate unified SHA256SUMS.txt
+        run: |
+          cd dist/
           sha256sum \
-            packaging/appimage/Steam_Grunge_Editor-*.AppImage \
-            packaging/debian/steam-grunge-editor_*.deb \
+            Steam_Grunge_Editor-*.AppImage \
+            steam-grunge-editor_*.deb \
+            steam-grunge-editor-*.rpm \
             > SHA256SUMS.txt
+          cat SHA256SUMS.txt   # visible in CI logs for quick sanity check
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -83,6 +182,7 @@ jobs:
             |------|----------|
             | `Steam_Grunge_Editor-*-x86_64.AppImage` | 🐧 Any Linux distro (universal) |
             | `steam-grunge-editor_*_all.deb` | 🐧 Ubuntu, Mint, Debian, Pop!_OS |
+            | `steam-grunge-editor-*.fc41.x86_64.rpm` | 🐧 Fedora, Bazzite, rpm-ostree |
             | `SteamGrungeEditor-*-Setup.exe` | 🪟 Windows 10/11 |
             | `Steam_Grunge_Editor-*.dmg` | 🍎 macOS Big Sur 11.0+ |
 
@@ -97,6 +197,14 @@ jobs:
             ```bash
             sudo dpkg -i steam-grunge-editor_*_all.deb
             sudo apt-get install -f
+            ```
+            **🐧 Fedora Workstation:**
+            ```bash
+            sudo dnf install ./steam-grunge-editor-*.rpm
+            ```
+            **🐧 Fedora Atomic / Bazzite / Silverblue (rpm-ostree):**
+            ```bash
+            rpm-ostree install ./steam-grunge-editor-*.rpm
             ```
             **🐧 Arch Linux (AUR):**
             ```bash
@@ -114,10 +222,11 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: false
           files: |
-            packaging/appimage/Steam_Grunge_Editor-*.AppImage
-            packaging/debian/steam-grunge-editor_*.deb
-            SHA256SUMS.txt
-        # Retry up to 3 times on transient GitHub API failures
+            dist/Steam_Grunge_Editor-*.AppImage
+            dist/steam-grunge-editor_*.deb
+            dist/steam-grunge-editor-*.rpm
+            dist/SHA256SUMS.txt
+
       - name: Retry release upload if needed
         if: failure()
         uses: softprops/action-gh-release@v2
@@ -126,6 +235,7 @@ jobs:
           generate_release_notes: false
           fail_on_unmatched_files: false
           files: |
-            packaging/appimage/Steam_Grunge_Editor-*.AppImage
-            packaging/debian/steam-grunge-editor_*.deb
-            SHA256SUMS.txt
+            dist/Steam_Grunge_Editor-*.AppImage
+            dist/steam-grunge-editor_*.deb
+            dist/steam-grunge-editor-*.rpm
+            dist/SHA256SUMS.txt
