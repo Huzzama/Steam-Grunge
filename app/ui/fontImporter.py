@@ -1,22 +1,4 @@
-"""
-fontImporter.py  —  Font Import System for Steam Grunge Editor
-
-Handles:
-  • ZIP font pack import  (recursive scan inside ZIPs)
-  • Individual .ttf / .otf file import
-  • Duplicate detection (skip + log)
-  • QFontDatabase registration of newly installed fonts
-  • Returns summary for UI feedback
-
-Public API
-──────────
-    result = import_fonts(paths: list[str], fonts_dir: str) -> ImportResult
-    register_all_fonts(fonts_dir: str) -> int          # returns count registered
-
-Called by EditorPanel after the user selects files via QFileDialog.
-"""
 from __future__ import annotations
-
 import os
 import shutil
 import zipfile
@@ -35,10 +17,10 @@ REGISTERABLE_EXTS = {".ttf", ".otf"}
 # ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class ImportResult:
-    installed:   List[str] = field(default_factory=list)   # font filenames installed
-    skipped:     List[str] = field(default_factory=list)   # duplicates skipped
-    failed:      List[str] = field(default_factory=list)   # errors
-    registered:  int = 0                                   # Qt font IDs registered
+    installed:   List[str] = field(default_factory=list)   
+    skipped:     List[str] = field(default_factory=list)   
+    failed:      List[str] = field(default_factory=list)   
+    registered:  int = 0                                   
 
     @property
     def total(self) -> int:

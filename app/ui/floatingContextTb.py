@@ -1,10 +1,3 @@
-"""
-floatingContextTb.py  —  Floating contextual toolbar for Steam Grunge Editor.
-
-Frameless Qt.Tool window positioned to the LEFT of the selected object on the
-canvas.  Feels like Canva's in-canvas contextual toolbar — detached, dynamic,
-lightweight.
-"""
 from __future__ import annotations
 from typing import List, Optional, Tuple
 
@@ -22,8 +15,8 @@ from PySide6.QtWidgets import (
 MIN_ALPHA          = 30
 TB_WIDTH           = 60
 SIDE_GAP           = 10
-MAX_PALETTE_COLORS = 6      # swatches extracted per image layer
-SWATCH_SIZE        = 22     # px per swatch button
+MAX_PALETTE_COLORS = 6      
+SWATCH_SIZE        = 22     
 _BG    = "#16161f"
 _BORDER= "#2e2e44"
 _MONO  = "Courier New"

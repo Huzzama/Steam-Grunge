@@ -7,7 +7,18 @@ from typing import Optional, Callable, List
 
 from app.services.appIdRegistry import AppIdRegistry
 from app.services.syncManifest   import SyncManifest
-from app.services.steamSync      import sync_artwork, find_steam_userdata
+from app.services.steamSync      import (
+    sync_artwork,
+    find_steam_userdata,
+    apply_post_sync_strategy,
+    get_grid_folder,
+    is_steam_running,
+    resolve_post_sync_strategy,
+    PostSyncStrategy,
+    DEFAULT_SILENT_STRATEGY,
+    AUTO_RESTART_THRESHOLD,
+    _librarycache_dir,
+)
 
 
 # ── BulkSyncJob ───────────────────────────────────────────────────────────────
@@ -18,15 +29,15 @@ class BulkSyncJob:
     template:   str
     file_path:  str
     app_id:     Optional[int]
-    status:     str               # see above
-    error:      str = ""          # populated after error
+    status:     str              
+    error:      str = ""          
     # Set after execution
     sync_result: Optional[object] = field(default=None, repr=False)
 
 
 # ── BulkSyncPlanner ───────────────────────────────────────────────────────────
 
-# Map export sub-folder name → template key used in registry / manifest
+
 _FOLDER_TO_TEMPLATE = {
     "cover": "cover",
     "wide":  "wide",
@@ -67,7 +78,7 @@ class BulkSyncPlanner:
 
             for png_path in sorted(folder.glob("*.png")):
                 file_str = str(png_path)
-                stem     = png_path.stem   
+                stem     = png_path.stem
 
                 # ── Identify game_name and app_id ─────────────────────────
                 app_id:    Optional[int] = None
@@ -91,7 +102,6 @@ class BulkSyncPlanner:
                         app_id = int(numeric_prefix)
                         canonical = self._registry.lookup_canonical(stem) or None
                         game_name = canonical or stem
-
 
                 if app_id is None:
                     app_id = self._registry.lookup(stem)
@@ -122,7 +132,7 @@ class BulkSyncPlanner:
     def plan_for_tab_exports(
         self,
         game_name: str,
-        exports: dict,          
+        exports: dict,
         app_id:  int,
     ) -> List[BulkSyncJob]:
 
@@ -145,7 +155,7 @@ class BulkSyncPlanner:
         return jobs
 
 
-# ── BulkSyncExecutor ─────────────────────────────────────────────────────────
+# ── BulkSyncExecutor ──────────────────────────────────────────────────────────
 
 class BulkSyncExecutor:
     def __init__(
@@ -158,14 +168,22 @@ class BulkSyncExecutor:
 
     def run(
         self,
-        jobs: List[BulkSyncJob],
-        steam_id: str,
-        userdata_path: Optional[Path],
-        on_progress: Optional[Callable[[BulkSyncJob], None]] = None,
-        force: bool = False,
+        jobs:             List[BulkSyncJob],
+        steam_id:         str,
+        userdata_path:    Optional[Path],
+        on_progress:      Optional[Callable[[BulkSyncJob], None]] = None,
+        force:            bool              = False,
+        # ── Post-sync strategy ────────────────────────────────────────────
+        # Resolved ONCE after all jobs complete — never per-job.
+        post_sync:        PostSyncStrategy  = DEFAULT_SILENT_STRATEGY,
+        interactive:      bool              = False,
+        silent:           bool              = True,
+        auto_threshold:   int               = 0,   # 0 → use AUTO_RESTART_THRESHOLD
     ) -> List[BulkSyncJob]:
         if userdata_path is None:
             userdata_path = find_steam_userdata()
+
+        any_installed = False   # tracks whether any file was actually written
 
         for job in jobs:
             if job.status == "unchanged" and not force:
@@ -182,19 +200,24 @@ class BulkSyncExecutor:
 
             try:
                 result = sync_artwork(
-                    app_id        = job.app_id,
-                    steam_id      = steam_id,
-                    userdata_path = userdata_path,
-                    exports       = {job.template: job.file_path},
-                    overwrite     = True,
+                    app_id           = job.app_id,
+                    steam_id         = steam_id,
+                    userdata_path    = userdata_path,
+                    exports          = {job.template: job.file_path},
+                    overwrite        = True,
+                    # Post-sync suppressed per-job; executed once below.
+                    post_sync        = "none",
+                    interactive      = False,
+                    silent           = True,
+                    auto_threshold   = auto_threshold,
                 )
                 job.sync_result = result
                 if result.success:
-                    job.status = "ok"
+                    job.status    = "ok"
+                    any_installed = True
                     self._manifest.record_success(
                         job.file_path, job.game_name, job.template, job.app_id
                     )
-                    # Persist mapping in case it wasn't already there
                     self._registry.register(job.game_name, job.app_id)
                 else:
                     err = "; ".join(result.errors) or "Unknown sync error"
@@ -214,5 +237,51 @@ class BulkSyncExecutor:
 
             if on_progress:
                 on_progress(job)
+
+        # ── Batch summary log ─────────────────────────────────────────────
+        num_ok      = sum(1 for j in jobs if j.status == "ok")
+        num_err     = sum(1 for j in jobs if j.status == "error")
+        num_skipped = sum(1 for j in jobs if j.status == "unchanged")
+        print(
+            f"[steamSync] batch complete — "
+            f"ok={num_ok}  errors={num_err}  skipped={num_skipped}"
+        )
+
+        # ── Post-sync: executed ONCE after all jobs complete ──────────────
+        # Only fires when at least one file was successfully installed.
+        if any_installed and userdata_path is not None:
+            # Resolve the strategy (respects interactive/silent mode)
+            if interactive and not silent:
+                strategy = resolve_post_sync_strategy(
+                    steam_is_running = is_steam_running(),
+                    interactive      = interactive,
+                    silent           = silent,
+                    default_strategy = post_sync,
+                )
+            else:
+                strategy = post_sync
+
+            # Use the last successfully-synced job's paths for the signal.
+            # grid_dir is shared across all jobs in a session (same steam_id).
+            last_ok = next(
+                (j for j in reversed(jobs) if j.status == "ok" and j.app_id),
+                None,
+            )
+            if last_ok and last_ok.app_id:
+                grid_dir   = get_grid_folder(userdata_path, steam_id)
+                steam_root = userdata_path.parent
+                appid_dir  = _librarycache_dir(steam_root, last_ok.app_id)
+
+                apply_post_sync_strategy(
+                    strategy    = strategy,
+                    app_id      = last_ok.app_id,
+                    steam_root  = steam_root,
+                    grid_dir    = grid_dir,
+                    appid_dir   = appid_dir,
+                    num_changes = num_ok,
+                    threshold   = auto_threshold,
+                    interactive = interactive,
+                    silent      = silent,
+                )
 
         return jobs

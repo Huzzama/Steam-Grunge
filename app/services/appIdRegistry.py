@@ -7,7 +7,6 @@ from typing import Optional
 
 
 class AppIdRegistry:
-    """Persistent game-name → AppID mapping backed by a JSON file."""
 
     _instance: Optional["AppIdRegistry"] = None
     _lock = threading.Lock()

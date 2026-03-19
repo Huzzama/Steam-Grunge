@@ -1,31 +1,3 @@
-"""
-toolBar.py  —  Vertical left-side tool selector for Steam Grunge Editor.
-
-Tools (in order):
-  Move        — select + drag layers / group children
-  Brush       — paint on active paint layer
-  Eraser      — erase on active paint layer (writes transparency)
-  Rectangle   — draw a new rectangle fill layer
-  Ellipse     — draw a new ellipse fill layer
-  ColorPicker — sample canvas pixel → update brush color
-  Hand        — pan the canvas by dragging
-  Zoom        — click to zoom in (Shift/Right-click = zoom out)
-
-Architecture:
-  • ToolMode enum — single source of truth for all tool identifiers
-  • ToolBar widget — vertical strip of ToolButton widgets
-  • Signals: tool_changed(ToolMode) emitted on every tool switch
-  • The canvas consumes this via set_tool(mode) and changes its mouse
-    behaviour purely based on the current ToolMode — no scattered flags.
-
-Integration (in mainWindow.py):
-    self.tool_bar = ToolBar()
-    self.tool_bar.tool_changed.connect(self.preview_canvas.set_tool)
-    # To read active tool from outside:
-    mode = self.tool_bar.active_tool()
-    # To push a tool programmatically (e.g. brush toggle button):
-    self.tool_bar.set_tool(ToolMode.BRUSH)
-"""
 from __future__ import annotations
 from enum import Enum, auto
 

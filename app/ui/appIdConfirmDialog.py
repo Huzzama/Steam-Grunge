@@ -1,22 +1,3 @@
-"""
-AppID Confirmation Dialog — shown once per game per tab session.
-
-Flow:
-  1. Opens with the detected game name from SteamGridDB.
-  2. Auto-searches Steam Store API in background thread.
-  3. Shows: "Game detected: X  |  AppID: Y  |  Is this correct?"
-  4a. [Confirm]         → stores AppID in tab state, dialog closes.
-  4b. [Search Manually] → expands a search panel where user can type + pick.
-  5. Once confirmed, the caller proceeds with export using the cached AppID.
-
-Usage:
-    from app.ui.appIdConfirmDialog import AppIdConfirmDialog
-
-    dlg = AppIdConfirmDialog(game_name="Resident Evil 4", parent=self)
-    if dlg.exec() == QDialog.Accepted:
-        app_id = dlg.result_app_id      # int
-        canonical = dlg.result_name     # str — canonical Steam name
-"""
 from __future__ import annotations
 from typing import Optional, List
 
@@ -268,9 +249,6 @@ class AppIdConfirmDialog(QDialog):
         mp.addLayout(search_row)
 
         # ── Direct numeric AppID entry ─────────────────────────────────────
-        # If the user already knows their AppID (from the Steam store URL),
-        # they can type it here and Confirm becomes available immediately
-        # without any network request.
         numeric_lbl = QLabel("— or enter AppID directly —")
         numeric_lbl.setAlignment(Qt.AlignCenter)
         numeric_lbl.setStyleSheet("color:#444; font-size:11px; padding-top:4px;")
@@ -316,7 +294,6 @@ class AppIdConfirmDialog(QDialog):
                 self._toggle_manual()
             return
 
-        # Cancel stale in-flight search so its done signal is ignored
         if self._auto_thread and self._auto_thread.isRunning():
             self._auto_thread.quit()
             self._auto_thread.wait(200)
@@ -325,25 +302,20 @@ class AppIdConfirmDialog(QDialog):
         self._confirm_btn.setEnabled(False)
 
         worker = _SearchWorker(query)
-        thread = QThread()           # no parent — avoids "Cannot create children
-                                     # for a parent in a different thread" warning
+        thread = QThread()          
+
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        # QueuedConnection ensures the slot always runs on the main thread,
-        # even though the signal is emitted from the worker thread.
+
         worker.done.connect(self._on_auto_done, Qt.QueuedConnection)
         worker.done.connect(thread.quit, Qt.QueuedConnection)
-        thread.finished.connect(worker.deleteLater)   # worker lives on thread; clean up after
-        thread.finished.connect(thread.deleteLater)   # clean up thread object
+        thread.finished.connect(worker.deleteLater)  
+        thread.finished.connect(thread.deleteLater)  
         self._auto_worker = worker
         self._auto_thread = thread
         thread.start()
 
-    def _on_auto_done(self, candidates: list, error_code: str, error_msg: str):
-        """Trampoline: only dispatch if this signal came from the current worker."""
-        # By the time this slot runs (main thread), _auto_worker may have been
-        # replaced by a newer search.  The QueuedConnection guarantees we're on
-        # the main thread, so the comparison is race-free.
+    def _on_auto_done(self, candidates: list, error_code: str, error_msg: str):    
         sender = self.sender()
         if sender is not self._auto_worker:
             return
@@ -355,8 +327,7 @@ class AppIdConfirmDialog(QDialog):
         self._candidates = candidates
 
         if error_code and error_code != "no_results":
-            # Real network/SSL failure — show a specific message and auto-open
-            # the manual panel so the user can enter an AppID offline.
+
             friendly = _ERROR_LABELS.get(error_code, "Search unavailable.")
             detail   = error_msg[:120] + ("…" if len(error_msg) > 120 else "")
             self._status_lbl.setText(f"{friendly}\n{detail}")
@@ -372,7 +343,6 @@ class AppIdConfirmDialog(QDialog):
             self._status_lbl.setStyleSheet("color:#cc8844;")
             return
 
-        # Best match: exact name first, else first result
         name_lower = self._game_name.lower()
         best = next(
             (c for c in candidates if c["name"].lower() == name_lower),
@@ -426,8 +396,7 @@ class AppIdConfirmDialog(QDialog):
         thread = QThread()           # no parent — avoids cross-thread parent warning
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        # QueuedConnection ensures slot runs on main thread; trampoline guards
-        # against stale signals from a replaced worker arriving out of order.
+
         worker.done.connect(self._on_manual_done, Qt.QueuedConnection)
         worker.done.connect(thread.quit, Qt.QueuedConnection)
         thread.finished.connect(worker.deleteLater)
@@ -511,14 +480,7 @@ class AppIdConfirmDialog(QDialog):
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def closeEvent(self, event):
-        """
-        Stop any in-flight search threads before the dialog is destroyed.
-
-        Without this, a running thread can emit its done signal after the
-        dialog widgets are gone, causing a crash or stale UI mutation.
-        We disconnect signals first so the slots are never called on a
-        dead widget, then ask the threads to quit and give them 500 ms.
-        """
+   
         for worker, thread in [
             (self._auto_worker,   self._auto_thread),
             (self._manual_worker, self._manual_thread),

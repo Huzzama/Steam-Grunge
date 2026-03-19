@@ -1,13 +1,3 @@
-"""
-layerDelegate.py  —  Layer list item delegate.
-
-Row layout (left→right):
-  [eye] [indent] [▶/▼ if group] [thumb] [kind icon] [name] [lock]
-Bottom strip: thin opacity bar.
-Group rows get a subtle folder tint and bold name.
-Child rows are indented by INDENT_W per level.
-Drop indicators: blue top-line (insert before) or blue outline (insert into group).
-"""
 from __future__ import annotations
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle
 from PySide6.QtCore    import Qt, QRect, QSize, QPoint
@@ -20,21 +10,21 @@ import io
 
 class LayerDelegate(QStyledItemDelegate):
     # ── Data roles ───────────────────────────────────────────────────────────
-    EYE_ROLE       = Qt.UserRole + 1   # bool  — layer visible?
-    KIND_ROLE      = Qt.UserRole + 2   # str   — layer.kind
-    OPAC_ROLE      = Qt.UserRole + 3   # float — 0-1 opacity
-    PIX_ROLE       = Qt.UserRole + 4   # QPixmap thumbnail
-    LOCK_ROLE      = Qt.UserRole + 5   # bool  — locked?
-    INDENT_ROLE    = Qt.UserRole + 6   # int   — 0 = top-level, 1 = inside group
-    COLLAPSED_ROLE = Qt.UserRole + 7   # bool  — group collapsed?
-    DROP_ABOVE     = Qt.UserRole + 8   # bool  — draw "insert above" line
-    DROP_INTO      = Qt.UserRole + 9   # bool  — draw "drop into group" outline
+    EYE_ROLE       = Qt.UserRole + 1  
+    KIND_ROLE      = Qt.UserRole + 2   
+    OPAC_ROLE      = Qt.UserRole + 3   
+    PIX_ROLE       = Qt.UserRole + 4  
+    LOCK_ROLE      = Qt.UserRole + 5  
+    INDENT_ROLE    = Qt.UserRole + 6   
+    COLLAPSED_ROLE = Qt.UserRole + 7   
+    DROP_ABOVE     = Qt.UserRole + 8   
+    DROP_INTO      = Qt.UserRole + 9   
 
     ROW_H    = 44
     THUMB_W  = 38
     THUMB_H  = 34
     EYE_W    = 22
-    INDENT_W = 16   # px per indent level
+    INDENT_W = 16   
 
     _checker: QPixmap | None = None
 

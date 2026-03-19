@@ -1,9 +1,24 @@
 name: Build macOS Package
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers when release.yml completes successfully on a v* tag push.
+# Using workflow_run instead of a raw tag push guarantees the GitHub Release
+# already exists before this job tries to upload to it — eliminates the
+# polling loop that could time out if the Linux build took too long.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: ["Build and Release"]   # must match the `name:` in release.yml
+    types: [completed]
+    branches-ignore: ['**']            # tags only — workflow_run doesn't filter
+                                       # by tag natively; we filter in the job
+
+  # Keep manual trigger for local testing / hotfix uploads
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and upload (e.g. v2.1.0)'
+        required: true
 
 permissions:
   contents: write
@@ -14,26 +29,47 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
 
+    # Only run when the triggering workflow succeeded AND was for a v* tag
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+
     steps:
-      - name: Checkout source
+      # ── Resolve the tag we are building ──────────────────────────────────────
+      - name: Resolve tag and version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.event.workflow_run.head_branch }}"
+          fi
+          VER="${TAG#v}"
+          echo "tag=$TAG"     >> $GITHUB_OUTPUT
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "Building tag: $TAG  version: $VER"
+
+      - name: Checkout source at tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
 
       - name: Write VERSION file
-        run: |
-          VER="${GITHUB_REF#refs/tags/v}"
-          echo "$VER" > VERSION
-          echo "Building version: $VER"
+        run: echo "${{ steps.meta.outputs.version }}" > VERSION
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
-          brew install create-dmg
+          pip install -r requirements.txt pyinstaller pillow
+
+      - name: Install create-dmg
+        run: brew install create-dmg
 
       - name: Generate icon.icns
         run: |
@@ -47,48 +83,82 @@ jobs:
           done
           iconutil -c icns "$ICONSET" -o app/assets/icon.icns
           rm -rf "$ICONSET"
+          echo "icon.icns generated"
 
       - name: Build .app with PyInstaller
         run: |
           pyinstaller packaging/macos/steam_grunge_editor_mac.spec \
             --distpath packaging/macos/dist \
             --workpath packaging/macos/build \
-            --noconfirm
+            --noconfirm \
+            --clean
+
+      - name: Verify .app bundle exists
+        run: |
+          APP="packaging/macos/dist/Steam Grunge Editor.app"
+          if [ ! -d "$APP" ]; then
+            echo "ERROR: .app bundle not found at: $APP"
+            exit 1
+          fi
+          echo "Bundle OK: $APP"
 
       - name: Set version in Info.plist
         run: |
-          VER="${GITHUB_REF#refs/tags/v}"
-          /usr/libexec/PlistBuddy -c \
-            "Set :CFBundleVersion $VER" \
-            "packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c \
-            "Set :CFBundleShortVersionString $VER" \
-            "packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
+          VER="${{ steps.meta.outputs.version }}"
+          PLIST="packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER"            "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$PLIST"
+          echo "Info.plist version set to $VER"
 
       - name: Create .dmg
         run: |
-          VER="${GITHUB_REF#refs/tags/v}"
+          VER="${{ steps.meta.outputs.version }}"
+          DMG="packaging/macos/Steam_Grunge_Editor-${VER}.dmg"
+
+          # Primary: with background image
           create-dmg \
             --volname "Steam Grunge Editor $VER" \
             --volicon "app/assets/icon.icns" \
-            --window-pos 200 120 \
+            --window-pos  200 120 \
             --window-size 600 400 \
             --icon-size 100 \
             --icon "Steam Grunge Editor.app" 150 185 \
             --hide-extension "Steam Grunge Editor.app" \
             --app-drop-link 450 185 \
-            "packaging/macos/Steam_Grunge_Editor-${VER}.dmg" \
+            --background "packaging/macos/dmg-background.png" \
+            "$DMG" \
+            "packaging/macos/dist/" 2>/dev/null \
+          || \
+          create-dmg \
+            --volname "Steam Grunge Editor $VER" \
+            --volicon "app/assets/icon.icns" \
+            --window-pos  200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Steam Grunge Editor.app" 150 185 \
+            --hide-extension "Steam Grunge Editor.app" \
+            --app-drop-link 450 185 \
+            "$DMG" \
             "packaging/macos/dist/"
+
+          if [ ! -f "$DMG" ]; then
+            echo "ERROR: .dmg not created"
+            exit 1
+          fi
+          echo "DMG OK: $DMG ($(du -sh "$DMG" | cut -f1))"
+
+      - name: Generate checksum
+        run: |
+          cd packaging/macos
+          sha256sum Steam_Grunge_Editor-*.dmg > SHA256SUMS-macos.txt
+          cat SHA256SUMS-macos.txt
 
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          # Wait for the release to exist (Linux job creates it)
-          for i in {1..10}; do
-            gh release view "$TAG" && break || sleep 15
-          done
+          TAG="${{ steps.meta.outputs.tag }}"
           gh release upload "$TAG" \
             packaging/macos/Steam_Grunge_Editor-*.dmg \
+            packaging/macos/SHA256SUMS-macos.txt \
             --clobber

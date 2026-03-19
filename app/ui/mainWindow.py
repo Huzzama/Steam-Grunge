@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
 
         # Undo / Redo
         self._btn_undo = QPushButton("↩ Undo")
-        self._btn_undo.setToolTip("Undo  (Ctrl+Z)")
+        self._btn_undo.setToolTip("Undo  (Ctrl+Z)")  
         self._btn_undo.clicked.connect(self._undo)
         tb.addWidget(self._btn_undo)
 

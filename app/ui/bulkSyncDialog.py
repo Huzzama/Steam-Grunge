@@ -1,19 +1,3 @@
-"""
-Bulk Sync to Steam dialog.
-
-Shows:
-  - How many assets were found
-  - How many need syncing (new / changed)
-  - How many will be skipped (unchanged)
-  - How many have no AppID
-  - Per-asset rows with status badges
-  - A progress bar during sync
-
-Actions:
-  [Sync New & Changed]   — default run, skips unchanged
-  [Force Sync All]       — re-sync everything including unchanged
-  [Cancel]
-"""
 from __future__ import annotations
 
 import os

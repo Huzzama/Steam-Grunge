@@ -1,25 +1,3 @@
-"""
-widgets.py  —  Reusable primitive UI widgets for the Steam Grunge Editor.
-
-All widgets follow the dark steam-grunge aesthetic:
-  Background:  #1a1a22
-  Borders:     #2e2e3e
-  Text:        #888 (dim), #ccc (active), #fff (accent)
-  Accent:      #5566cc (blue-purple)
-
-Exported widgets:
-  LabeledSlider    — horizontal slider with label + live readout
-  ColorSwatch      — clickable square that opens QColorDialog
-  IconButton       — flat icon-only QPushButton with hover glow
-  SectionHeader    — uppercase monospace section divider
-  HRule            — subtle horizontal separator line
-  TagBadge         — small pill label (file type, status, etc.)
-  CollapsibleBox   — expandable/collapsible group container
-  SearchBar        — styled QLineEdit with magnifier icon + clear button
-  StatusBar        — one-line status text at the bottom of a panel
-  ToolRow          — horizontal group of small tool buttons
-  NumericInput     — validated integer/float QLineEdit with +/- steppers
-"""
 from __future__ import annotations
 import math
 from PySide6.QtWidgets import (

@@ -1,11 +1,3 @@
-"""
-searchPanel.py — SteamGridDB browser with:
-  - Working thumbnail loading (signals back to main thread correctly)
-  - Filter bar: Asset Type, Style, Dimensions, NSFW, Sort
-  - Page navigation (prev/next + page number)
-  - Clicking artwork → adds as a draggable/resizable canvas Layer
-  - No "Load from File" button
-"""
 from __future__ import annotations
 import os, io, requests
 from typing import Optional, List

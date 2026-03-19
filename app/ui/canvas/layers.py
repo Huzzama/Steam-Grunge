@@ -1,11 +1,3 @@
-"""
-canvas/layers.py  —  Single canonical Layer definition for Steam Grunge Editor.
-
-ALL other files must import Layer from here:
-    from app.ui.canvas.layers import Layer
-
-Do NOT define a Layer class anywhere else (especially not in previewCanvas.py).
-"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple

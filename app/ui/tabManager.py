@@ -1,23 +1,3 @@
-"""
-tabManager.py  —  Multi-tab workspace system for Steam Grunge Editor.
-
-Each tab is a fully independent WorkspaceTab containing:
-  - Its own PreviewCanvas (layers, template, undo history)
-  - Its own EditorPanel  (effects, layer list, properties)
-  - Its own SearchPanel  (game search, artwork)
-  - Its own AppState     (game name, template, effects values)
-  - Its own BrushPanel   (shared UI but connected to its canvas)
-  - Its own FloatingContextTb
-
-TabBar sits at the very top of the window (browser-style).
-  - Click tab  → switch workspace
-  - "+" button → new tab
-  - "×" button → close tab (min 1 tab always stays open)
-
-Usage (in MainWindow._build_ui):
-    self.tab_manager = TabManager(parent_window=self)
-    layout.addWidget(self.tab_manager)
-"""
 from __future__ import annotations
 from typing import List
 

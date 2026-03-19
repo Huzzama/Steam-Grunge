@@ -1,23 +1,3 @@
-"""
-projectIO.py  —  Save / Load for the .sgeproj project format.
-
-.sgeproj is a ZIP archive containing:
-  project.json          — all state, layer metadata, canvas settings, version tag
-  assets/layer_N.png    — pixel data for each layer that carries a PIL image
-                          (image, paint, texture, file, fill, mask_* kinds)
-
-The canvas runtime state (Qt pixmap cache, undo history, selection index) is
-NOT persisted — it is cheap to rebuild on load.
-
-Public API
-──────────
-  save_project(tab, path)   → None   raises ProjectIOError on failure
-  load_project(tab, path)   → None   raises ProjectIOError on failure
-
-  SGEPROJ_EXT  = ".sgeproj"
-  FORMAT_VER   = 2
-"""
-
 from __future__ import annotations
 
 import io
@@ -33,9 +13,8 @@ if TYPE_CHECKING:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 SGEPROJ_EXT = ".sgeproj"
-FORMAT_VER  = 2          # bump when the schema changes in a breaking way
+FORMAT_VER  = 2         
 
-# Layer fields that are purely metadata (no pixel data) — serialised as-is
 _META_FIELDS = [
     "kind", "name", "visible", "locked",
     "x", "y", "w", "h",
@@ -70,7 +49,6 @@ def _layer_to_dict(layer, asset_key: Optional[str]) -> dict:
     d: dict = {}
     for field in _META_FIELDS:
         val = getattr(layer, field, None)
-        # Tuples aren't JSON-native but lists round-trip fine
         if isinstance(val, tuple):
             val = list(val)
         d[field] = val

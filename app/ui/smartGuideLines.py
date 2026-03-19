@@ -1,33 +1,3 @@
-"""
-smartGuideLines.py  —  Smart Guides for Steam Grunge Editor
-
-Collects alignment candidates from the canvas (document bounds + all visible
-layers including group children), detects proximity during move/resize, draws
-temporary guide lines, and applies optional soft snapping.
-
-Usage
-─────
-Instantiated once by PreviewCanvas:
-
-    from app.ui.smartGuideLines import SmartGuides
-    self._smart_guides = SmartGuides(canvas=self)
-
-Then called inside:
-
-    mouseMoveEvent  →  self._smart_guides.update(layer, snap=True)
-                       returns (snapped_dx, snapped_dy) offset correction
-    paintEvent      →  self._smart_guides.draw(painter, canvas_rect)
-    mouseReleaseEvent → self._smart_guides.clear()
-
-Architecture
-────────────
-SmartGuides
-  ├── _collect_candidates()   → list[AlignRect]   (doc + visible layers)
-  ├── _align_points(rect)     → AlignPoints        (l/cx/r, t/cy/b)
-  ├── _detect(moving, others) → list[Guide]        (h or v lines in doc coords)
-  ├── draw(painter, cr)       → renders guides in widget space
-  └── clear()                 → removes all active guides
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -1,24 +1,4 @@
-"""
-Persistent record of every Steam sync operation, keyed by
-(game_name, template).
-
-Each entry records:
-  - app_id          confirmed Steam AppID
-  - template        asset type (cover, wide, hero, …)
-  - file_path       absolute path to the exported PNG
-  - file_hash       SHA-256 of the file at the time of last successful sync
-  - last_synced     ISO-8601 timestamp of last successful sync
-  - status          "ok" | "error" | "skipped"
-  - error_message   last error, if any
-
-Change detection:
-  manifest.is_changed(path, game, template) → True  means file has changed
-  (or was never synced) and should be included in the next sync run.
-
-Thread-safety: all mutations protected by threading.Lock.
-"""
 from __future__ import annotations
-
 import hashlib
 import json
 import os
@@ -90,7 +70,7 @@ class SyncManifest:
             stored_hash = entry.get("file_hash")
             if not stored_hash:
                 return True
-        # Hash comparison outside lock (slow I/O)
+        # Hash comparison outside lock 
         current_hash = _sha256(file_path)
         return current_hash != stored_hash
 

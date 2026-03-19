@@ -1,11 +1,3 @@
-"""
-previewCanvas.py  —  Interactive canvas editor widget.
-
-Layer class lives in app.ui.canvas.layers — do NOT redefine it here.
-
-Tool-mode system:
-  MOVE / BRUSH / ERASER / RECTANGLE / ELLIPSE / COLOR_PICKER / HAND / ZOOM
-"""
 from __future__ import annotations
 import os, io
 from typing import Optional, List, Tuple

@@ -1,15 +1,3 @@
-"""
-canvas/handles.py  —  Resize and rotation handle geometry + hit-testing.
-
-All functions receive a PreviewCanvas instance (or the minimal attributes
-they need) so they stay stateless and easy to test independently.
-
-Public API:
-  HANDLE_SIZE, HANDLE_HALF, MIN_SIZE   — shared constants
-  handle_points(canvas, layer)         → List[QPointF]  (9 points: 0-7 resize, 8 rot)
-  hit_handle(canvas, layer, pos)       → int  (-1 = miss)
-  corner_cursor(corner)                → Qt.CursorShape
-"""
 from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, List

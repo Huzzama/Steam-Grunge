@@ -1,23 +1,3 @@
-"""
-layerProperties.py  —  Context-sensitive Layer Properties panel.
-
-Displays and edits all properties for the currently-selected layer.
-Meant to be embedded inside EditorPanel or used as a floating panel.
-
-Handles these layer kinds:
-  paint / image / texture / file  → transform, color adjustments, tint
-  text                            → font, size, style, outline, shadow
-  fill                            → fill type, colors, angle
-  group                           → placeholder (no editable properties)
-  locked / child of locked group  → lock notice, all controls hidden
-
-Signals:
-  layer_changed(str)   emitted with a reason string on every property edit
-
-Dependencies:
-  widgets.py           LabeledSlider, ColorSwatch, HRule, SectionHeader,
-                       TagBadge, ToolRow, NumericInput
-"""
 from __future__ import annotations
 import os
 

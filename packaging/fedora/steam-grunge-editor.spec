@@ -5,9 +5,18 @@
 # No Python, pip, or compilation required on the build or target machine.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Disable debug/debugsource packages — PyInstaller binary has no build-time
-# debug info. Without this rpmbuild fails: "Empty %files debugsourcefiles.list"
-%global debug_package %{nil}
+# Suppress ALL debug subpackages (debug, debuginfo, debugsource).
+# Required for PyInstaller binaries on Fedora 41+: the brp-python-bytecompile
+# and add-determinism macros now generate a debugsource subpackage even when
+# there are no sources to collect, causing:
+#   "error: Empty %files file .../debugsourcefiles.list"
+# Both directives are needed — %debug_package alone is not enough on fc41.
+%global debug_package   %{nil}
+%global _enable_debug_packages 0
+
+# Also disable the dwz (DWARF compression) pass — not applicable to a
+# PyInstaller single-file binary and can cause spurious build failures.
+%global __os_install_post %(echo '%{__os_install_post}' | sed -e 's!/usr/lib[^[:space:]]*/brp-python-bytecompile[[:space:]].*$!!g')
 
 Name:           steam-grunge-editor
 Version:        %{getenv:APP_VERSION}
@@ -15,42 +24,37 @@ Release:        1%{?dist}
 Summary:        A grunge-style editor for Steam artwork and assets
 
 License:        MIT
-URL:            https://github.com/youruser/steam-grunge-editor
+URL:            https://github.com/Huzzama/Steam-Grunge
 
-# This package installs a precompiled binary — no build steps needed.
+# Precompiled PyInstaller binary — x86_64 only, no compilation on target.
 BuildArch:      x86_64
 
-# ── No runtime dependencies ───────────────────────────────────────────────────
-# The PyInstaller binary is fully self-contained.
-# Qt / PySide6 libraries are bundled inside the binary itself.
+# PyInstaller bundles Qt / PySide6 — no system runtime deps needed.
 AutoReqProv:    no
 
 # ── Sources ───────────────────────────────────────────────────────────────────
-# Source0: the PyInstaller binary (placed in SOURCES/ as a tarball)
-# Source1: desktop entry
-# Source2: application icon
 Source0:        steam-grunge-editor-bin-%{version}.tar.gz
 Source1:        steam-grunge-editor.desktop
 Source2:        steam-grunge-editor.png
 
 %description
-Steam Grunge Editor is a PySide6-based graphical tool for editing and
-applying grunge-style effects to Steam artwork and game assets.
+Steam Grunge Editor is a PySide6-based graphical tool for creating and
+syncing grunge-style custom artwork for your Steam library.
+
+Supports cover, wide/header, hero, logo and icon artwork types.
+Includes SteamGridDB integration, layer FX, and direct Steam sync.
 
 Distributed as a self-contained binary — no system Python required.
 
 
 # ── Prep ──────────────────────────────────────────────────────────────────────
 %prep
-# Extract the tarball containing the PyInstaller binary.
-# Expected layout inside the tarball:
-#   steam-grunge-editor-bin-%{version}/steam-grunge-editor
 %autosetup -n steam-grunge-editor-bin-%{version}
 
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 %build
-# Nothing to compile — binary is already built by PyInstaller.
+# Nothing to compile — binary is pre-built by PyInstaller in CI.
 
 
 # ── Install ───────────────────────────────────────────────────────────────────
@@ -76,7 +80,6 @@ install -Dm644 %{SOURCE2} \
 
 
 # ── Post-install / Post-uninstall scriptlets ──────────────────────────────────
-# Refresh the icon cache so the app appears in the system menu immediately.
 %post
 /usr/bin/gtk-update-icon-cache -f -t %{_datadir}/icons/hicolor &>/dev/null || :
 /usr/bin/update-desktop-database -q %{_datadir}/applications &>/dev/null || :
@@ -88,5 +91,6 @@ install -Dm644 %{SOURCE2} \
 
 # ── Changelog ─────────────────────────────────────────────────────────────────
 %changelog
-* %(date "+%a %b %d %Y") Packager <you@example.com> - %{version}-1
-- Initial RPM release
+* %(date "+%a %b %d %Y") Packager <build@steam-grunge-editor> - %{version}-1
+- v2.1.0: Pro-level post-sync strategy system, Flatpak/Steam Deck support,
+  smart batch sync, rotating file logger, game-running guard

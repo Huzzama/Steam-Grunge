@@ -1,13 +1,3 @@
-"""
-canvas/fx.py  —  Global post-processing effects for the canvas.
-
-Functions:
-  apply_film_grain(arr, strength)           — numpy RGBA array → numpy RGBA array
-  apply_chromatic_aberration(arr, strength) — numpy RGBA array → numpy RGBA array
-  qpixmap_to_pil(pix)                       — QPixmap → PIL Image (no file I/O)
-  build_fx_composite(canvas)                — renders full scene + applies effects,
-                                              returns a QPixmap ready to draw
-"""
 from __future__ import annotations
 from typing import TYPE_CHECKING
 

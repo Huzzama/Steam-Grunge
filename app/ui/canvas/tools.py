@@ -1,15 +1,3 @@
-"""
-canvas/tools.py  —  Tool-mode mouse event handlers.
-
-Each handler receives the PreviewCanvas instance and the mouse event.
-They mutate canvas state directly (same as before, just extracted here
-to keep previewCanvas.py focused on painting + public API).
-
-Handlers (all called from PreviewCanvas):
-  handle_press(canvas, event)
-  handle_move(canvas, event)
-  handle_release(canvas, event)
-"""
 from __future__ import annotations
 import math
 from typing import TYPE_CHECKING

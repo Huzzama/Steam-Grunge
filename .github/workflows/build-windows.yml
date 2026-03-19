@@ -1,10 +1,22 @@
 name: Build Windows Installer
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Same trigger strategy as build-macos.yml: fire after release.yml succeeds
+# so the GitHub Release already exists when we try to upload to it.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: ["Build and Release"]   # must match the `name:` in release.yml
+    types: [completed]
+    branches-ignore: ['**']
+
+  # Manual trigger — useful for re-running a failed Windows build without
+  # re-tagging, or for testing locally via `gh workflow run`.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and upload (e.g. v2.1.0)'
+        required: true
 
 permissions:
   contents: write
@@ -13,29 +25,47 @@ jobs:
   build-windows:
     name: Build Windows .exe Installer
     runs-on: windows-latest
+    timeout-minutes: 60
+
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      # ── Resolve the tag we are building ──────────────────────────────────────
+      - name: Resolve tag and version
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.event.workflow_run.head_branch }}"
+          fi
+          VER="${TAG#v}"
+          echo "tag=$TAG"     >> $GITHUB_OUTPUT
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "Building tag: $TAG  version: $VER"
 
-      - name: Set up Python
+      - name: Checkout source at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+
+      - name: Write VERSION file
+        shell: bash
+        run: echo "${{ steps.meta.outputs.version }}" > VERSION
+
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Extract version
-        shell: bash
-        run: |
-          RAW="${GITHUB_REF#refs/tags/v}"
-          echo "VERSION=$RAW" >> $GITHUB_ENV
-          echo "$RAW" > VERSION
-          echo "Building version: $RAW"
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller pillow
+          pip install -r requirements.txt pyinstaller pillow
 
       - name: Convert icon.png to icon.ico
         run: |
@@ -49,25 +79,43 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller packaging/windows/steam_grunge_editor.spec --noconfirm --clean
+          pyinstaller packaging/windows/steam_grunge_editor.spec `
+            --noconfirm `
+            --clean
 
-      - name: Install Inno Setup
+      - name: Verify PyInstaller output
+        shell: bash
+        run: |
+          if [ ! -f "dist/SteamGrungeEditor/SteamGrungeEditor.exe" ]; then
+            echo "ERROR: SteamGrungeEditor.exe not found after PyInstaller build"
+            exit 1
+          fi
+          echo "EXE OK: dist/SteamGrungeEditor/SteamGrungeEditor.exe"
+
+      - name: Install Inno Setup 6
         shell: powershell
-        run: choco install innosetup --yes
+        run: choco install innosetup --yes --no-progress
 
       - name: Build installer with Inno Setup
         shell: cmd
         run: |
-          mkdir dist\installer
+          mkdir dist\installer 2>nul
           "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ^
-            /DAppVersion=${{ env.VERSION }} ^
+            /DAppVersion=${{ steps.meta.outputs.version }} ^
             packaging\windows\steam_grunge_editor.iss
 
-      - name: Verify installer version
+      - name: Verify installer output
         shell: bash
         run: |
-          ls dist/installer/
-          echo "Expected: SteamGrungeEditor-${{ env.VERSION }}-Setup.exe"
+          VER="${{ steps.meta.outputs.version }}"
+          EXPECTED="dist/installer/SteamGrungeEditor-${VER}-Setup.exe"
+          if [ ! -f "$EXPECTED" ]; then
+            echo "ERROR: Installer not found at $EXPECTED"
+            echo "Contents of dist/installer/:"
+            ls dist/installer/ || echo "(empty)"
+            exit 1
+          fi
+          echo "Installer OK: $EXPECTED"
 
       - name: Generate checksum
         shell: bash
@@ -81,11 +129,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          # Wait for the release to exist (Linux job creates it)
-          for i in {1..10}; do
-            gh release view "$TAG" && break || sleep 15
-          done
+          TAG="${{ steps.meta.outputs.tag }}"
           gh release upload "$TAG" \
             dist/installer/SteamGrungeEditor-*-Setup.exe \
             dist/installer/SHA256SUMS-windows.txt \

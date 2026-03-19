@@ -1,18 +1,3 @@
-"""
-brushPanel.py  —  Brush tool panel for Steam Grunge Editor.
-
-New features over previous version:
-  • Mathematically correct color wheel + barycentric triangle picker
-      pos → color and color → pos use identical triangle geometry
-  • Search bar (debounced, case-insensitive, matches name/file/pack)
-  • Favorites system — right-click tile to star; persisted as JSON
-  • Recent brushes bar — auto-updated, last MAX_RECENTS entries
-  • Extended brush controls: Size, Opacity, Hardness, Spacing, Angle, Scatter
-  • Preview background modes: Dark | Light | Checker
-  • Brush info panel — name, pack, type, size×opacity×hardness
-  • Thumbnail cache — never re-parses binary on every UI refresh
-  • Graceful fallback thumbnails — never blank tiles
-"""
 from __future__ import annotations
 import os, io, math, json
 import numpy as np
@@ -46,9 +31,6 @@ _BORDER = "#2e2e3e"
 _ACCENT = "#5566cc"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Favorites store
-# ─────────────────────────────────────────────────────────────────────────────
 class _FavStore:
     def __init__(self):
         self._favs: set[str] = set()
@@ -81,9 +63,6 @@ class _FavStore:
 _FAVS = _FavStore()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Mathematically correct color wheel + barycentric triangle
-# ─────────────────────────────────────────────────────────────────────────────
 class ColorWheelWidget(QWidget):
     """
     Hue ring + inner equilateral SV triangle.

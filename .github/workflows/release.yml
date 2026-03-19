@@ -51,7 +51,6 @@ jobs:
           chmod +x packaging/debian/build-deb.sh
           bash packaging/debian/build-deb.sh
 
-      # Upload artifacts so the release job can collect all checksums together
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -65,10 +64,21 @@ jobs:
           path: packaging/debian/steam-grunge-editor_*.deb
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Job 2: RPM  (Fedora container — produces correct .fcXX dist tag)
+  # Job 2: RPM  (Fedora 41 container)
+  #
+  # FIX v2.1.0: Fedora 41 introduced a separate debugsource subpackage that
+  # rpmbuild generates even for PyInstaller binaries (which have no sources).
+  # This causes: "error: Empty %files file ...debugsourcefiles.list"
+  #
+  # The fix is applied at two levels:
+  #   1. The spec file sets both %global debug_package %{nil} AND
+  #      %global _enable_debug_packages 0 (spec file is the authoritative fix)
+  #   2. The rpmbuild call below passes --define flags as a belt-and-suspenders
+  #      guard in case rpmbuild processes globals after the debug subpackage
+  #      decision point (observed on fc41 with add-determinism macro).
   # ─────────────────────────────────────────────────────────────────────────────
   build-rpm:
-    name: Build RPM (Fedora)
+    name: Build RPM (Fedora 41)
     runs-on: ubuntu-22.04
     container:
       image: fedora:41
@@ -81,7 +91,11 @@ jobs:
         run: echo "${VERSION#v}" > VERSION
 
       - name: Install build tools
-        run: dnf install -y rpm-build rpmdevtools python3 python3-pip ImageMagick wget
+        run: |
+          dnf install -y \
+            rpm-build rpmdevtools \
+            python3 python3-pip \
+            ImageMagick wget
 
       - name: Generate multi-size icons
         run: |
@@ -152,7 +166,7 @@ jobs:
             steam-grunge-editor_*.deb \
             steam-grunge-editor-*.rpm \
             > SHA256SUMS.txt
-          cat SHA256SUMS.txt   # visible in CI logs for quick sanity check
+          cat SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -163,16 +177,34 @@ jobs:
 
             Create distressed, grunge-style custom artwork for your Steam library.
 
-            ### What's new in v2.0.0
+            ### What's new in v2.1.0
 
-            - 💼 **Project save/load** — `.sgeproj` format (full layer stack + AppState, atomic write, autosave every 5 min)
-            - 🔔 **Auto update checker** — notified at launch when a new version is available
-            - 🖼️ **Film grain now respects per-layer adjustments** — brightness, contrast, tint, saturation all survive grain being turned up
-            - ⚡ **Major performance overhaul** — slider drag no longer freezes canvas; 25%-res preview during drag, cached FX during interaction, vectorised NumPy grain
-            - 🖱️ **Bounding box handle jitter fixed** — sub-pixel `QPointF`/`QRectF` transforms replace `int()` truncation
-            - 🔑 **API key persisted between sessions** — stored in `settings.json`, loaded automatically on launch
-            - 🖼️ **SteamGridDB 401 / broken thumbnails fixed** — CDN URLs no longer send Bearer auth; validity checked via `QPixmap.loadFromData()`
-            - 🐛 **Bounding box no longer lost after combo/wheel scroll** — `wheelEvent`/`focusOutEvent` guards added
+            #### 🔄 Pro-level post-sync strategy system
+            Steam no longer needs to be manually restarted after syncing artwork.
+
+            | Strategy | Behaviour |
+            |----------|-----------|
+            | `soft` | Touch folders + send `steam://reload/<appid>` *(default)* |
+            | `restart` | Full Steam restart — shutdown → settle → relaunch |
+            | `auto` | Smart: restarts if ≥ 5 files changed, otherwise soft |
+            | `none` | Write files only, no Steam signal |
+
+            #### 🎮 Game-running guard
+            Before any restart, the app checks whether a game is running.
+            Silent mode falls back to `soft` automatically — no gameplay interruption, ever.
+            Detection covers native Linux games, Proton, and uses `SteamAppId` environment inspection as the definitive signal.
+
+            #### 🟦 Steam Deck & Flatpak support
+            - Flatpak Steam root path auto-detected
+            - Steam IPC pipe checked at both native and Flatpak XDG runtime paths
+            - `xdg-open` fallback for `steam://reload` when pipe is unavailable
+            - Restart uses `flatpak kill` / `flatpak run` — fixes silent no-op on Steam Deck
+
+            #### ⚡ Batch sync — single post-sync execution
+            Bulk sync no longer restarts Steam once per game file. All artwork is written first, then a single signal fires at the end.
+
+            #### 📋 Rotating file logger
+            All sync operations logged to `~/.config/steam-grunge-editor/logs/steamSync.log` (1 MB rotating, 3 backups).
 
             See [CHANGELOG.md](https://github.com/Huzzama/Steam-Grunge/blob/main/CHANGELOG.md) for full details.
 

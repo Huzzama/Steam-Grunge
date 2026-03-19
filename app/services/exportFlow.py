@@ -1,22 +1,3 @@
-"""
-Central export entry point used by ALL export paths:
-  - Editor panel "Export Image" button
-  - File → Export menu
-  - Sync to Steam button
-
-Flow
-----
-1. Resolve confirmed AppID — in order:
-     a. state.confirmed_app_id  (set by prior confirmation or restored from .sgeproj)
-     b. AppIdRegistry persistent cache
-     c. AppIdConfirmDialog (user search + confirm)
-2. Compose canvas to PIL image.
-3. Build Steam filename from AppID + template.
-4. Save file.
-5. Return saved path (caller can open Sync dialog if desired).
-
-If the user cancels the confirm dialog, export is aborted (returns None).
-"""
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 

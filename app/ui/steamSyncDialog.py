@@ -1,14 +1,3 @@
-"""
-Sync to Steam" dialog.
-
-Flow:
-  1. Dialog opens — auto-fetches AppID for current game name in background.
-  2. Shows: detected game name, AppID, Steam user accounts found, artworks
-     that will be installed (one row per exported template).
-  3. User can correct the game name / AppID manually.
-  4. "Sync" button copies files → Steam grid folder.
-  5. Shows per-file result with green ✔ / red ✖ indicators.
-"""
 from __future__ import annotations
 
 import os

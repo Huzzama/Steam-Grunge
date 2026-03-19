@@ -4,7 +4,87 @@ All notable changes to Steam Grunge Editor are documented here.
 
 ---
 
-## v2.0.0 2026-03-13
+## [2.1.0] — 2026-03-19
+
+### Added
+
+**Post-sync strategy system (`steamSync.py`)**
+
+A configurable, multi-mode post-sync engine that decides how Steam is notified
+after artwork is written — replacing the previous hardcoded touch + reload call.
+
+- **`"none"`** — write files only, no Steam signal
+- **`"soft"`** — touch grid + librarycache folders, send `steam://reload/<appid>` (original behaviour, now explicit)
+- **`"restart"`** — full Steam restart: `steam -shutdown` → 1s settle delay → relaunch
+- **`"auto"`** — smart mode: uses `"restart"` when `num_changes ≥ AUTO_RESTART_THRESHOLD` (default 5), otherwise `"soft"`
+- `AUTO_RESTART_THRESHOLD` is a module-level constant, overridable at runtime (`steamSync.AUTO_RESTART_THRESHOLD = N`)
+- `apply_post_sync_strategy()` — central dispatcher; accepts `num_changes`, `threshold`, `interactive`, `silent`
+- `resolve_post_sync_strategy()` — pure helper that resolves the strategy from runtime context without executing it
+- `choose_auto_strategy(num_changes, threshold)` — selects `"restart"` or `"soft"` based on threshold
+
+**Steam process detection**
+
+- `is_steam_running()` — cross-platform Steam process detection
+  - Linux: `/proc` scan with substring match (`"steam" in comm`) catches `steamwebhelper`, `steam-runtime`, etc.; `pgrep -f steam` fallback
+  - macOS: `pgrep -x steam_osx` + `pgrep -x steam`
+  - Windows: `tasklist /FI "IMAGENAME eq steam.exe"`
+- `is_game_running()` — multi-layer game detection before any restart
+  - Layer 1: `/proc` comm heuristics — `steam_app_*`, `pressure-vessel`, `reaper` (Steam's universal process supervisor for native Linux games)
+  - Layer 2: `/proc/<pid>/environ` scan for `SteamAppId=` variable — the definitive signal, works even when comm is obfuscated
+  - Layer 3: `pgrep -f pressure-vessel` fallback; Windows checks `GameOverlayUI.exe`
+  - Environ scan capped at 20 candidate PIDs to stay O(1) in practice
+
+**Game-running guard in `restart_steam()`**
+
+- Before restarting, always calls `is_game_running()`
+- `interactive=True` → prompts the user: *"A game appears to be running. Restart Steam anyway? (y/n)"*
+- `silent=True` → skips restart automatically, falls back to `"soft"` — no gameplay interruption
+- 1-second settle delay added before shutdown to let filesystem watchers process written files
+- Returns `bool` — callers know whether the restart was performed or blocked
+
+**Flatpak / Steam Deck support (`steamSync.py`)**
+
+- `_steam_roots()` now includes `~/.var/app/com.valvesoftware.Steam/data/Steam` — the default path on Steam Deck and Flatpak desktop installs
+- `_steam_pipe_path()` — checks native `~/.steam/steam.pipe` first, then `$XDG_RUNTIME_DIR/app/com.valvesoftware.Steam/.steam/steam.pipe` for Flatpak
+- `_signal_reload()` — adds `xdg-open` as a fallback if the pipe write fails (works in both native and Flatpak environments)
+- `_is_flatpak_steam()` — detects Flatpak Steam by checking `~/.var/app/com.valvesoftware.Steam`
+- `restart_steam()` — Flatpak-aware: uses `flatpak kill com.valvesoftware.Steam` for shutdown and `flatpak run com.valvesoftware.Steam` for relaunch
+
+**Batch sync — single post-sync execution (`bulkSync.py`)**
+
+- `BulkSyncExecutor.run()` now suppresses post-sync per-job (`post_sync="none"` per call)
+- A single `apply_post_sync_strategy()` fires after all jobs complete, only if `any_installed = True`
+- Eliminates multiple Steam restarts during bulk sync (was restarting once per game)
+- Batch summary line logged after loop: `ok=N  errors=N  skipped=N`
+- `auto_threshold` parameter added to `run()` — passed through to `apply_post_sync_strategy()`
+
+**Rotating file logger (`steamSync.py`)**
+
+- All `[steamSync]` messages now written to `~/.config/steam-grunge-editor/logs/steamSync.log`
+- `RotatingFileHandler`: 1 MB max per file, 3 backups kept — prevents unbounded disk growth
+- Session-start marker (`─── session start ───`) written on each module init for easy log navigation
+- `_log(msg, level=logging.INFO)` — drop-in for `print()`; stdout output unchanged
+- Logger failures are silently discarded — never crashes sync
+
+### Fixed
+
+- `is_steam_running()` exact `comm == "steam"` match replaced with substring — was silently returning `False` on systems where `steamwebhelper` or `steam-runtime` was the first Steam process found
+- `pgrep -x steam` (comm-only) replaced with `pgrep -f steam` (full cmdline) as fallback — catches Steam launched from wrapper scripts or full paths
+- Native Linux games not detected as running — `reaper` comm match and `SteamAppId` environ check added; previous code only caught Proton games via `pressure-vessel`
+- Steam IPC pipe miss on Flatpak — `steam://reload` signals were silently dropped because `~/.steam/steam.pipe` does not exist in the Flatpak sandbox
+- `restart_steam()` no-op on Flatpak — `steam -shutdown` and bare `steam` are not in `$PATH` inside the Flatpak sandbox; now uses `flatpak kill` / `flatpak run`
+- Multiple Steam restarts during bulk sync — post-sync was executing once per job file
+
+### Changed
+
+- `sync_artwork()` gains optional keyword parameters: `post_sync`, `interactive`, `silent`, `default_strategy`, `auto_threshold` — all defaulted for full backward compatibility
+- `BulkSyncExecutor.run()` gains: `post_sync`, `interactive`, `silent`, `auto_threshold` — all backward-compatible
+- `apply_post_sync_strategy()` gains: `num_changes`, `threshold`, `interactive`, `silent` keyword arguments
+- All remaining `print("[steamSync]…")` calls migrated to `_log()` for unified stdout + file output
+
+---
+
+## v2.0.0 — 2026-03-13
 
 ### Fixed
 - Fixed inconsistent Steam artwork syncing across games that use hashed `librarycache` subfolders
@@ -17,7 +97,7 @@ All notable changes to Steam Grunge Editor are documented here.
 - Better handling of mixed Steam cache layouts across different games
 
 
-## [2.0.0] - 2026-03-12
+## [2.0.0] — 2026-03-12
 
 ### Major
 - Complete render pipeline stabilization

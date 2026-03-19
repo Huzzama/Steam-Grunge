@@ -10,7 +10,7 @@ from PySide6.QtGui import QFont, QPixmap, QPainter, QColor, QIcon
 from PySide6.QtCore import Qt
 
 # ── App icon — icon.png lives in app/assets/ ─────────────────────────────────
-# PROJECT_ROOT is already computed above (two levels up from this file)
+# PROJECT_ROOT is already computed above 
 _LOGO_PATH = os.path.join(PROJECT_ROOT, "app", "assets", "icon.png")
 
 
@@ -73,7 +73,7 @@ def main():
     splash.show()
     app.processEvents()
 
-    # ── Heavy imports (happen after splash is visible) ────────────────────────
+    # ── Heavy imports  ─────────────────────────────────────────────────────
     from app.ui.mainWindow import MainWindow
     from app.config import FONTS_DIR
     from app.ui.fontImporter import register_all_fonts
@@ -182,7 +182,7 @@ def main():
 
     # Also set icon on the window itself (covers taskbar on some platforms)
     if os.path.exists(_LOGO_PATH):
-        window.setWindowIcon(QIcon(_LOGO_PATH))  # re-set on window for Linux/Windows taskbar
+        window.setWindowIcon(QIcon(_LOGO_PATH)) 
 
     window.show()
     splash.finish(window)

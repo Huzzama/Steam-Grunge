@@ -1,25 +1,3 @@
-"""
-brushImporter.py  —  GIMP brush parser + thumbnail cache + ZIP importer.
-
-Supported formats:
-  .gbr  — GIMP Brush raster (v1 and v2, 1/2/3/4 bpp)
-  .gih  — GIMP Image Hose (multi-cell; extracts first cell)
-  .vbr  — GIMP Parametric Brush (rendered from INI params)
-  .png / .jpg / .jpeg — plain image brushes
-
-Thumbnail cache:
-  Parsed previews are saved as small PNGs in BRUSHES_DIR/.cache/<sha1>.png.
-  The cache key combines file path + mtime so stale entries are automatically
-  bypassed on next access.
-
-Key public API:
-  load_brush_preview(path, thumb_size, use_cache, bg_mode) -> PILImage
-      Always returns a usable image — never None, never silent blank.
-  make_fallback_thumb(path, size) -> PILImage
-      Readable "GBR" / "GIH" badge tile used when parsing fails.
-  import_zip(zip_path, progress_cb) -> BrushImportResult
-  run_zip_import_dialog(parent) -> BrushImportResult | None
-"""
 from __future__ import annotations
 import os, io, zipfile, shutil, struct, tempfile, hashlib, logging
 import numpy as np
@@ -65,13 +43,6 @@ def save_cached_thumb(path: str, img: PILImage.Image) -> None:
 # ── Format parsers ────────────────────────────────────────────────────────────
 
 def parse_gbr(path: str) -> PILImage.Image | None:
-    """
-    GIMP Brush v1/v2 binary format.
-    Header (big-endian uint32 each):
-      header_size | version | width | height | bytes_per_pixel
-    Pixel data starts at offset = header_size.
-    Supported bpp: 1 (gray mask), 2 (gray+alpha), 3 (RGB), 4 (RGBA).
-    """
     try:
         with open(path, "rb") as f:
             raw = f.read()
@@ -108,8 +79,6 @@ def parse_gbr(path: str) -> PILImage.Image | None:
 
         if bpp == 1:
             a2d = arr.reshape((h, w))
-            # GIMP bpp=1: the byte value IS opacity (0=transparent, 255=fully opaque).
-            # White pixels in the brush = fully opaque mark. No inversion needed.
             g = PILImage.fromarray(a2d, "L")
             return PILImage.merge("RGBA", (g, g, g, g))
         elif bpp == 2:
@@ -129,25 +98,6 @@ def parse_gbr(path: str) -> PILImage.Image | None:
 
 
 def parse_gih(path: str) -> PILImage.Image | None:
-    """
-    GIMP Image Hose (.gih) — two text header lines followed by a sequence of
-    embedded GBR-format brush blocks (one per cell).
-
-    Real GIH format:
-      Line 1:  brush name  (arbitrary text)
-      Line 2:  "<spacing> ncells:<N> cellwidth:<W> cellheight:<H> dim:<D> ..."
-      Remainder: N back-to-back GBR binary blocks.
-
-    Each GBR block starts with a 20-byte binary header (same as parse_gbr):
-      header_size | version | width | height | bpp  (5 × uint32 big-endian)
-    followed by optional name bytes up to header_size, then pixel data.
-
-    We extract the first cell only and return its image.
-
-    Fallback: if the embedded data doesn't parse as GBR (old flat format),
-    we attempt to read it as raw 1-bpp or 4-bpp pixel data using cellwidth/
-    cellheight from the header line.
-    """
     try:
         with open(path, "rb") as f:
             raw = f.read()
@@ -326,16 +276,7 @@ def load_brush_preview(path: str,
                        thumb_size:  int  = 56,
                        use_cache:   bool = True,
                        bg_mode:     str  = "dark") -> PILImage.Image:
-    """
-    Load any supported brush file and return a composited RGBA thumbnail.
 
-    bg_mode:
-      "dark"     — dark #1e1e28 background  (default; good for light brushes)
-      "light"    — light #e8e8e8 background  (good for dark brushes)
-      "checker"  — checkerboard               (shows transparency explicitly)
-
-    Never returns None. If parsing fails, returns make_fallback_thumb().
-    """
     # ── 1. Cache hit ──────────────────────────────────────────────────────
     if use_cache:
         cached = get_cached_thumb(path)
@@ -385,8 +326,6 @@ def load_brush_preview(path: str,
     out = PILImage.alpha_composite(bg, img)
 
     # ── 6. Auto-boost near-invisible brushes ──────────────────────────────
-    #   If the alpha channel is nearly empty the brush probably stores its
-    #   shape in luminance (inverted mask). Boost by inverting luminance.
     alpha_max = np.array(img.split()[3], dtype=np.float32).max()
     if alpha_max < 15:
         rgb = np.array(out.convert("RGB"), dtype=np.float32)
