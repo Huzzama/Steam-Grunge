@@ -8,22 +8,19 @@ on:
 permissions:
   contents: write
 
-env:
-  VERSION: ${{ github.ref_name }}
-
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────────
+
+  # ───────────────────────────────────────────────────────────────────────────
   # Job 1: AppImage + .deb  (Ubuntu 22.04)
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
   build-linux:
     name: Build Linux Packages (AppImage + deb)
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Write VERSION file
-        run: echo "${VERSION#v}" > VERSION
+        run: echo "${GITHUB_REF_NAME#v}" > VERSION
 
       - name: Install system dependencies
         run: |
@@ -46,59 +43,43 @@ jobs:
           chmod +x packaging/appimage/build-appimage.sh
           bash packaging/appimage/build-appimage.sh
 
-      - name: Build .deb package
+      - name: Build .deb
         run: |
           chmod +x packaging/debian/build-deb.sh
           bash packaging/debian/build-deb.sh
 
-      - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: appimage
           path: packaging/appimage/Steam_Grunge_Editor-*.AppImage
 
-      - name: Upload deb artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: deb
           path: packaging/debian/steam-grunge-editor_*.deb
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Job 2: RPM  (Fedora 41 container)
-  #
-  # FIX v2.1.0: Fedora 41 introduced a separate debugsource subpackage that
-  # rpmbuild generates even for PyInstaller binaries (which have no sources).
-  # This causes: "error: Empty %files file ...debugsourcefiles.list"
-  #
-  # The fix is applied at two levels:
-  #   1. The spec file sets both %global debug_package %{nil} AND
-  #      %global _enable_debug_packages 0 (spec file is the authoritative fix)
-  #   2. The rpmbuild call below passes --define flags as a belt-and-suspenders
-  #      guard in case rpmbuild processes globals after the debug subpackage
-  #      decision point (observed on fc41 with add-determinism macro).
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 2: RPM (Fedora 41 container)
+  # ───────────────────────────────────────────────────────────────────────────
   build-rpm:
     name: Build RPM (Fedora 41)
     runs-on: ubuntu-22.04
     container:
       image: fedora:41
-    # APP_VERSION must be explicit here — the container does not inherit
-    # the top-level env.VERSION automatically in all GitHub Actions versions,
-    # and %{getenv:APP_VERSION} in rpm 4.19 / Fedora 41 requires the variable
-    # to be present in the rpmbuild process environment, not just as --define.
+    # PKG_VERSION is evaluated by GitHub Actions BEFORE entering the container,
+    # so it is always available as a real env var inside every step.
+    # GITHUB_REF_NAME is NOT inherited by Fedora containers — do not use it.
     env:
-      APP_VERSION: ${{ github.ref_name }}
+      PKG_VERSION: ${{ github.ref_name }}
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Write VERSION file
         run: |
-          VER="${VERSION#v}"
+          VER="${PKG_VERSION#v}"
           echo "$VER" > VERSION
-          echo "APP_VERSION=$VER" >> $GITHUB_ENV
-          echo "Building RPM version: $VER"
+          echo "VERSION file: $(cat VERSION)"
 
       - name: Install build tools
         run: |
@@ -135,38 +116,184 @@ jobs:
           chmod +x packaging/fedora/build-rpm.sh
           bash packaging/fedora/build-rpm.sh
 
-      - name: Upload RPM artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: rpm
           path: ~/rpmbuild/RPMS/**/*.rpm
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # Job 3: Collect all artifacts, generate checksums, publish release
-  # ─────────────────────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 3: Windows installer
+  # ───────────────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write VERSION file
+        shell: bash
+        run: echo "${GITHUB_REF_NAME#v}" > VERSION
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pillow
+
+      - name: Convert icon.png to icon.ico
+        run: |
+          python -c "
+          from PIL import Image
+          img = Image.open('app/assets/icon.png')
+          img.save('app/assets/icon.ico', format='ICO',
+                   sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          print('icon.ico created')
+          "
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller packaging/windows/steam_grunge_editor.spec `
+            --noconfirm --clean
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        shell: cmd
+        run: |
+          mkdir dist\installer 2>nul
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ^
+            /DAppVersion=%GITHUB_REF_NAME:v=% ^
+            packaging\windows\steam_grunge_editor.iss
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          cd dist/installer
+          sha256sum SteamGrungeEditor-*-Setup.exe > SHA256SUMS-windows.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/installer/SteamGrungeEditor-*-Setup.exe
+            dist/installer/SHA256SUMS-windows.txt
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 4: macOS .dmg
+  # ───────────────────────────────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS .dmg
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write VERSION file
+        run: echo "${GITHUB_REF_NAME#v}" > VERSION
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pillow
+          brew install create-dmg
+
+      - name: Generate icon.icns
+        run: |
+          ICONSET="packaging/macos/icon.iconset"
+          mkdir -p "$ICONSET"
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size app/assets/icon.png \
+              --out "$ICONSET/icon_${size}x${size}.png"
+            sips -z $((size*2)) $((size*2)) app/assets/icon.png \
+              --out "$ICONSET/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns "$ICONSET" -o app/assets/icon.icns
+          rm -rf "$ICONSET"
+
+      - name: Build .app with PyInstaller
+        run: |
+          pyinstaller packaging/macos/steam_grunge_editor_mac.spec \
+            --distpath packaging/macos/dist \
+            --workpath packaging/macos/build \
+            --noconfirm --clean
+
+      - name: Set version in Info.plist
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          PLIST="packaging/macos/dist/Steam Grunge Editor.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$PLIST"
+
+      - name: Create .dmg
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          create-dmg \
+            --volname "Steam Grunge Editor $VER" \
+            --volicon "app/assets/icon.icns" \
+            --window-pos 200 120 --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Steam Grunge Editor.app" 150 185 \
+            --hide-extension "Steam Grunge Editor.app" \
+            --app-drop-link 450 185 \
+            "packaging/macos/Steam_Grunge_Editor-${VER}.dmg" \
+            "packaging/macos/dist/" 2>/dev/null || \
+          create-dmg \
+            --volname "Steam Grunge Editor $VER" \
+            --volicon "app/assets/icon.icns" \
+            --window-pos 200 120 --window-size 600 400 \
+            --icon-size 100 \
+            --icon "Steam Grunge Editor.app" 150 185 \
+            --hide-extension "Steam Grunge Editor.app" \
+            --app-drop-link 450 185 \
+            "packaging/macos/Steam_Grunge_Editor-${VER}.dmg" \
+            "packaging/macos/dist/"
+
+      - name: Generate checksum
+        run: |
+          cd packaging/macos
+          sha256sum Steam_Grunge_Editor-*.dmg > SHA256SUMS-macos.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            packaging/macos/Steam_Grunge_Editor-*.dmg
+            packaging/macos/SHA256SUMS-macos.txt
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 5: Collect everything, generate checksums, publish release
+  # ───────────────────────────────────────────────────────────────────────────
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
-    needs: [build-linux, build-rpm]
+    needs: [build-linux, build-rpm, build-windows, build-macos]
 
     steps:
-      - name: Download AppImage
-        uses: actions/download-artifact@v4
-        with:
-          name: appimage
-          path: dist/
+      - uses: actions/download-artifact@v4
+        with: { name: appimage, path: dist/ }
 
-      - name: Download deb
-        uses: actions/download-artifact@v4
-        with:
-          name: deb
-          path: dist/
+      - uses: actions/download-artifact@v4
+        with: { name: deb,      path: dist/ }
 
-      - name: Download RPM
-        uses: actions/download-artifact@v4
-        with:
-          name: rpm
-          path: dist/
+      - uses: actions/download-artifact@v4
+        with: { name: rpm,      path: dist/ }
+
+      - uses: actions/download-artifact@v4
+        with: { name: windows,  path: dist/ }
+
+      - uses: actions/download-artifact@v4
+        with: { name: macos,    path: dist/ }
 
       - name: Generate unified SHA256SUMS.txt
         run: |
@@ -175,10 +302,12 @@ jobs:
             Steam_Grunge_Editor-*.AppImage \
             steam-grunge-editor_*.deb \
             steam-grunge-editor-*.rpm \
+            SteamGrungeEditor-*-Setup.exe \
+            Steam_Grunge_Editor-*.dmg \
             > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Create GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "Steam Grunge Editor ${{ github.ref_name }}"
@@ -189,32 +318,11 @@ jobs:
 
             ### What's new in v2.1.0
 
-            #### 🔄 Pro-level post-sync strategy system
-            Steam no longer needs to be manually restarted after syncing artwork.
-
-            | Strategy | Behaviour |
-            |----------|-----------|
-            | `soft` | Touch folders + send `steam://reload/<appid>` *(default)* |
-            | `restart` | Full Steam restart — shutdown → settle → relaunch |
-            | `auto` | Smart: restarts if ≥ 5 files changed, otherwise soft |
-            | `none` | Write files only, no Steam signal |
-
-            #### 🎮 Game-running guard
-            Before any restart, the app checks whether a game is running.
-            Silent mode falls back to `soft` automatically — no gameplay interruption, ever.
-            Detection covers native Linux games, Proton, and uses `SteamAppId` environment inspection as the definitive signal.
-
-            #### 🟦 Steam Deck & Flatpak support
-            - Flatpak Steam root path auto-detected
-            - Steam IPC pipe checked at both native and Flatpak XDG runtime paths
-            - `xdg-open` fallback for `steam://reload` when pipe is unavailable
-            - Restart uses `flatpak kill` / `flatpak run` — fixes silent no-op on Steam Deck
-
-            #### ⚡ Batch sync — single post-sync execution
-            Bulk sync no longer restarts Steam once per game file. All artwork is written first, then a single signal fires at the end.
-
-            #### 📋 Rotating file logger
-            All sync operations logged to `~/.config/steam-grunge-editor/logs/steamSync.log` (1 MB rotating, 3 backups).
+            - 🔄 **Post-sync strategy system** — `soft` / `restart` / `auto` / `none`
+            - 🎮 **Game-running guard** — never interrupts active gameplay before restart
+            - 🟦 **Steam Deck & Flatpak support** — full detection, pipe IPC, and restart
+            - ⚡ **Batch sync** — single post-sync execution after all jobs complete
+            - 📋 **Rotating file logger** — `~/.config/steam-grunge-editor/logs/steamSync.log`
 
             See [CHANGELOG.md](https://github.com/Huzzama/Steam-Grunge/blob/main/CHANGELOG.md) for full details.
 
@@ -222,9 +330,9 @@ jobs:
 
             | File | Platform |
             |------|----------|
-            | `Steam_Grunge_Editor-*-x86_64.AppImage` | 🐧 Any Linux distro (universal) |
-            | `steam-grunge-editor_*_all.deb` | 🐧 Ubuntu, Mint, Debian, Pop!_OS |
-            | `steam-grunge-editor-*.fc41.x86_64.rpm` | 🐧 Fedora, Bazzite, rpm-ostree |
+            | `Steam_Grunge_Editor-*-x86_64.AppImage` | 🐧 Any Linux distro |
+            | `steam-grunge-editor_*_amd64.deb` | 🐧 Ubuntu, Debian, Mint |
+            | `steam-grunge-editor-*.fc41.x86_64.rpm` | 🐧 Fedora, Bazzite |
             | `SteamGrungeEditor-*-Setup.exe` | 🪟 Windows 10/11 |
             | `Steam_Grunge_Editor-*.dmg` | 🍎 macOS Big Sur 11.0+ |
 
@@ -235,49 +343,28 @@ jobs:
             chmod +x Steam_Grunge_Editor-*-x86_64.AppImage
             ./Steam_Grunge_Editor-*-x86_64.AppImage
             ```
-            **🐧 Debian / Ubuntu / Linux Mint:**
-            ```bash
-            sudo dpkg -i steam-grunge-editor_*_all.deb
-            sudo apt-get install -f
-            ```
-            **🐧 Fedora Workstation:**
-            ```bash
-            sudo dnf install ./steam-grunge-editor-*.rpm
-            ```
-            **🐧 Fedora Atomic / Bazzite / Silverblue (rpm-ostree):**
-            ```bash
-            rpm-ostree install ./steam-grunge-editor-*.rpm
-            ```
-            **🐧 Arch Linux (AUR):**
-            ```bash
-            yay -S steam-grunge-editor
-            ```
-            **🪟 Windows:** Run the `.exe` installer and follow the wizard.
+            **🐧 Debian/Ubuntu:** `sudo dpkg -i steam-grunge-editor_*_amd64.deb`
 
-            **🍎 macOS:** Open the `.dmg`, drag to Applications.
-            First launch: right-click → Open (bypasses Gatekeeper warning).
+            **🐧 Fedora:** `sudo dnf install ./steam-grunge-editor-*.rpm`
+
+            **🐧 Fedora Atomic/Bazzite:** `rpm-ostree install ./steam-grunge-editor-*.rpm`
+
+            **🐧 Arch/Steam Deck:** `yay -S steam-grunge-editor`
+
+            **🪟 Windows:** Run the `.exe` installer.
+
+            **🍎 macOS:** Open `.dmg`, drag to Applications. First launch: right-click → Open.
 
             ### Verify checksums
             ```bash
             sha256sum -c SHA256SUMS.txt
             ```
-          generate_release_notes: true
-          fail_on_unmatched_files: false
-          files: |
-            dist/Steam_Grunge_Editor-*.AppImage
-            dist/steam-grunge-editor_*.deb
-            dist/steam-grunge-editor-*.rpm
-            dist/SHA256SUMS.txt
-
-      - name: Retry release upload if needed
-        if: failure()
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "Steam Grunge Editor ${{ github.ref_name }}"
           generate_release_notes: false
           fail_on_unmatched_files: false
           files: |
             dist/Steam_Grunge_Editor-*.AppImage
             dist/steam-grunge-editor_*.deb
             dist/steam-grunge-editor-*.rpm
+            dist/SteamGrungeEditor-*-Setup.exe
+            dist/Steam_Grunge_Editor-*.dmg
             dist/SHA256SUMS.txt
