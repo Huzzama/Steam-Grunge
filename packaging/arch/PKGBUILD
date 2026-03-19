@@ -75,11 +75,7 @@ install="${pkgname}.install"
 
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Huzzama/Steam-Grunge/archive/refs/tags/v${pkgver}.tar.gz")
 
-# UPDATE THIS after tagging v2.1.0:
-#   curl -sL https://github.com/Huzzama/Steam-Grunge/archive/refs/tags/v2.1.0.tar.gz | sha256sum
-sha256sums=('SKIP')
-# Replace 'SKIP' with the real hash once the tag exists:
-# sha256sums=('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
+sha256sums=('f3072a0bd50f286483b04b9e83de0d0127378b41c79f0d600c5b2c40da12d842')
 
 # ─────────────────────────────────────────────────────────────────────────────
 prepare() {

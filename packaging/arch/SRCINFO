@@ -20,6 +20,6 @@ pkgbase = steam-grunge-editor
 	optdepends = steam: sync artwork directly to your Steam library
 	optdepends = flatpak: alternative Steam install (Steam Deck default)
 	source = steam-grunge-editor-2.1.0.tar.gz::https://github.com/Huzzama/Steam-Grunge/archive/refs/tags/v2.1.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = f3072a0bd50f286483b04b9e83de0d0127378b41c79f0d600c5b2c40da12d842
 
 pkgname = steam-grunge-editor
