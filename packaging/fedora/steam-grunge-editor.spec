@@ -19,7 +19,7 @@
 %global __os_install_post %(echo '%{__os_install_post}' | sed -e 's!/usr/lib[^[:space:]]*/brp-python-bytecompile[[:space:]].*$!!g')
 
 Name:           steam-grunge-editor
-Version:        %{getenv:APP_VERSION}
+Version:        %{APP_VERSION}
 Release:        1%{?dist}
 Summary:        A grunge-style editor for Steam artwork and assets
 

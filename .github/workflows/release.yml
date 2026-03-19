@@ -82,13 +82,23 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: fedora:41
+    # APP_VERSION must be explicit here — the container does not inherit
+    # the top-level env.VERSION automatically in all GitHub Actions versions,
+    # and %{getenv:APP_VERSION} in rpm 4.19 / Fedora 41 requires the variable
+    # to be present in the rpmbuild process environment, not just as --define.
+    env:
+      APP_VERSION: ${{ github.ref_name }}
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Write VERSION file
-        run: echo "${VERSION#v}" > VERSION
+        run: |
+          VER="${VERSION#v}"
+          echo "$VER" > VERSION
+          echo "APP_VERSION=$VER" >> $GITHUB_ENV
+          echo "Building RPM version: $VER"
 
       - name: Install build tools
         run: |
