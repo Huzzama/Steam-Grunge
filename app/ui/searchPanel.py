@@ -27,7 +27,7 @@ class ArtworkCard(QFrame):
         self.setFixedSize(145, 210)
         self.setCursor(Qt.PointingHandCursor)
         self.setStyleSheet("""
-            QFrame { background:#111; border:1px solid #2a2a2a; border-radius:3px; }
+            QFrame { background:#111; border:1px solid #0d2030; border-radius:3px; }
             QFrame:hover { border:1px solid #5a7aaa; }
         """)
         self._lbl = QLabel("…", self)
@@ -63,7 +63,7 @@ class ArtworkCard(QFrame):
 STYLE = """
 QWidget#SearchPanel { background:#161616; border-right:1px solid #2a2a2a; }
 QLineEdit {
-    background:#0d0d0d; border:1px solid #333; border-radius:3px;
+    background:#0d0d0d; border:1px solid #0d2030; border-radius:3px;
     color:#ccc; padding:5px 8px; font-family:'Courier New'; font-size:14px;
 }
 QLineEdit:focus { border:1px solid #666; }
@@ -77,19 +77,19 @@ QPushButton#primary:hover { background:#22224a; color:#aaaaff; }
 QPushButton#page_btn { padding:2px 4px; font-size:12px; min-width:30px; max-width:30px; }
 QPushButton#page_btn[current="true"] { background:#1e1e3a; color:#8888dd; border-color:#4444aa; }
 QComboBox {
-    background:#0d0d0d; border:1px solid #333; color:#aaa;
+    background:#0d0d0d; border:1px solid #0d2030; color:#aaa;
     padding:3px 6px; font-family:'Courier New'; font-size:12px; border-radius:2px;
 }
 QComboBox::drop-down { border:none; }
-QComboBox QAbstractItemView { background:#1a1a1a; color:#ccc; selection-background-color:#2a2a4a; }
+QComboBox QAbstractItemView { background:#1a1a1a; color:#ccc; selection-background-color:#0a1828; }
 QLabel#hdr { color:#666; font-size:12px; font-family:'Courier New'; letter-spacing:2px; padding:3px 0; }
 QListWidget {
-    background:#0d0d0d; border:1px solid #2a2a2a; color:#ccc;
+    background:#0d0d0d; border:1px solid #0d2030; color:#ccc;
     font-family:'Courier New'; font-size:14px;
 }
 QListWidget::item { padding:5px 8px; border-bottom:1px solid #1e1e1e; }
 QListWidget::item:selected { background:#1e1e3a; color:#8888dd; }
-QListWidget::item:hover { background:#1e1e1e; }
+QListWidget::item:hover { background:#060c14; }
 """
 
 
@@ -140,7 +140,7 @@ class SearchPanel(QWidget):
         top_scroll.setStyleSheet("""
             QScrollArea { border: none; background: transparent; }
             QScrollBar:vertical {
-                background: #111; width: 6px; margin: 0;
+                background: #040608; width: 6px; margin: 0;
             }
             QScrollBar::handle:vertical {
                 background: #333; border-radius: 3px; min-height: 20px;

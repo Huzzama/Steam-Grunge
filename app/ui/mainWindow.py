@@ -12,7 +12,6 @@ from app.services.projectIO import (save_project, load_project,
 from app.ui.canvas.previewCanvas import PreviewCanvas
 from app.ui.searchPanel import SearchPanel
 from app.ui.editorPanel import EditorPanel
-from app.ui.brushPanel import BrushPanel
 from app.ui.floatingContextTb import FloatingContextTb
 from app.ui.tabManager import TabManager
 from app.state import state
@@ -31,8 +30,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Steam Grunge Editor")
-        self.setMinimumSize(1600, 900)
-        self.resize(1800, 1000)
+        self.setMinimumSize(1000, 650)
+        self.resize(1400, 860)
 
         self._build_menu()
         self._build_status_bar()
@@ -63,36 +62,41 @@ class MainWindow(QMainWindow):
         tb.setIconSize(QSize(18, 18))
         tb.setStyleSheet("""
             QToolBar {
-                background: #111;
-                border-bottom: 1px solid #2a2a2a;
-                spacing: 4px;
-                padding: 4px 8px;
+                background: #040608;
+                border-bottom: 1px solid #0d2030;
+                spacing: 2px;
+                padding: 3px 10px;
             }
             QPushButton {
-                background: #1e1e1e;
-                color: #aaa;
-                border: 1px solid #333;
-                border-radius: 3px;
-                font-family: 'Courier New';
-                font-size: 13px;
+                background: #060c14;
+                color: #405060;
+                border: 1px solid #0d2030;
+                border-radius: 2px;
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
                 padding: 4px 12px;
                 min-width: 36px;
+                min-height: 24px;
             }
-            QPushButton:hover  { background: #2a2a3a; color: #ddd; border-color: #555; }
-            QPushButton:pressed { background: #1a1a2a; }
+            QPushButton:hover  {
+                background: #0a1a28;
+                color: #38bdf8;
+                border-color: #1a4060;
+            }
+            QPushButton:pressed { background: #040e18; }
             QPushButton#crop_btn[active="true"] {
-                background: #1a2e1a;
-                color: #88cc88;
-                border-color: #3a6e3a;
+                background: #04141e;
+                color: #38bdf8;
+                border-color: #1a4060;
             }
-            QLabel#sep { color: #333; font-size: 18px; padding: 0 4px; }
+            QLabel#sep { color: #0d2030; font-size: 16px; padding: 0 3px; }
         """)
         self.addToolBar(Qt.TopToolBarArea, tb)
 
         # App title
-        title = QLabel("✦ STEAM GRUNGE")
-        title.setStyleSheet("color:#3a6e3a; font-family:'Courier New'; "
-                            "font-size:13px; font-weight:bold; padding-right:12px;")
+        title = QLabel("⬡ STEAM GRUNGE")
+        title.setStyleSheet("color:#38bdf8; font-family:'Courier New', monospace; "
+                            "font-size:12px; font-weight:bold; padding-right:12px; letter-spacing:3px;")
         tb.addWidget(title)
 
         sep1 = QLabel("|"); sep1.setObjectName("sep"); tb.addWidget(sep1)
@@ -150,66 +154,11 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 return False
 
-    def _toggle_brush_panel(self, checked: bool = None):
-        """B key / toolbar button — show or hide the brush panel of the active tab."""
-        tab = self.tab_manager.current_tab()
-        if checked is None:
-            checked = not tab.brush_panel.isVisible()
-        tab.toggle_brush_panel(checked)
-        if hasattr(self, '_brush_menu_act'):
-            self._brush_menu_act.setChecked(checked)
-        if hasattr(self, '_btn_brush') and self._widget_alive(self._btn_brush):
-            self._btn_brush.blockSignals(True)
-            self._btn_brush.setChecked(checked)
-            self._btn_brush.blockSignals(False)
 
-    def _activate_brush_tool(self):
-        """Select Brush tool inside panel (also shows panel)."""
-        self._toggle_brush_panel(True)
-        if hasattr(self, 'brush_panel'):
-            self.brush_panel._on_tool_selected("brush")
 
-    def _activate_eraser_tool(self):
-        """Select Eraser tool inside panel (also shows panel)."""
-        self._toggle_brush_panel(True)
-        if hasattr(self, 'brush_panel'):
-            self.brush_panel._on_tool_selected("eraser")
 
-    def _toggle_brush(self, checked: bool = False):
-        """Legacy compatibility."""
-        self._toggle_brush_panel(checked)
 
-    def _import_brushes_zip(self):
-        """File → Import Brushes → From ZIP Pack…"""
-        from app.ui.brushImporter import run_zip_import_dialog
-        result = run_zip_import_dialog(self)
-        if result and result.imported:
-            self.brush_panel._load_brushes()
-            self._status_label.setText(
-                f"Imported {len(result.imported)} brush(es) from '{result.pack_name}'")
 
-    def _import_brushes_files(self):
-        """File → Import Brushes → Individual Files…"""
-        from PySide6.QtWidgets import QFileDialog
-        from app.config import ASSETS_DIR
-        import os, shutil
-        brushes_dir = os.path.join(ASSETS_DIR, "brushes")
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "Import Brush Files", "",
-            "Brush Files (*.gbr *.gih *.vbr *.png *.jpg *.jpeg);;All Files (*)")
-        if not paths:
-            return
-        os.makedirs(brushes_dir, exist_ok=True)
-        copied = 0
-        for src in paths:
-            dst = os.path.join(brushes_dir, os.path.basename(src))
-            if src != dst:
-                shutil.copy2(src, dst)
-                copied += 1
-        self.brush_panel._load_brushes()
-        self._status_label.setText(f"Imported {copied} brush file(s)")
-
-    # ── Font menu handlers ───────────────────────────────────────────────────────
 
     def _import_font_zip(self):
         """Fonts → Import Font Pack (ZIP)…"""
@@ -261,30 +210,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'editor_panel') and hasattr(self.editor_panel, '_populate_font_combo'):
             self.editor_panel._populate_font_combo()
 
-    def _clear_brush_cache(self):
-        """Brushes → Clear Thumbnail Cache + Reload."""
-        try:
-            from app.ui.brushImporter import clear_gih_cache
-            n = clear_gih_cache()
-            self.brush_panel._load_brushes()
-            if hasattr(self, '_status_label'):
-                self._status_label.setText(f"Cache cleared ({n} entries) — brushes reloaded")
-        except Exception as e:
-            if hasattr(self, '_status_label'):
-                self._status_label.setText(f"Cache clear failed: {e}")
 
-    def _open_brushes_folder(self):
-        """Open the brushes directory in the OS file manager."""
-        from app.config import ASSETS_DIR
-        import os, subprocess, sys
-        brushes_dir = os.path.join(ASSETS_DIR, "brushes")
-        os.makedirs(brushes_dir, exist_ok=True)
-        if sys.platform == "win32":
-            os.startfile(brushes_dir)
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", brushes_dir])
-        else:
-            subprocess.Popen(["xdg-open", brushes_dir])
 
     def _undo(self):
         if hasattr(self, 'preview_canvas'):
@@ -357,195 +283,17 @@ class MainWindow(QMainWindow):
                 padding: 4px 10px;
                 border-radius: 3px;
             }
-            QMenuBar::item:selected { background: #222; color: #fff; }
+            QMenuBar::item:selected { background: #0a1828; color: #38bdf8; }
             QMenu {
-                background: #1a1a1a;
-                border: 1px solid #333;
-                color: #ccc;
-                font-family: 'Courier New';
-                font-size: 13px;
+                background: #060c14;
+                border: 1px solid #0d2030;
+                color: #80a0b0;
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
             }
-            QMenu::item:selected { background: #2a2a4a; color: #fff; }
-            QMenu::separator { height: 1px; background: #333; margin: 3px 8px; }
+            QMenu::item:selected { background: #0a1828; color: #38bdf8; }
+            QMenu::separator { height: 1px; background: #0d2030; margin: 3px 8px; }
         """)
-
-        # ═══════════════════════════════════════════════════════════════════
-        # FILE
-        # ═══════════════════════════════════════════════════════════════════
-        file_menu = menubar.addMenu("File")
-
-        new_proj_act = QAction("New Project", self)
-        new_proj_act.setShortcut(QKeySequence("Ctrl+N"))
-        new_proj_act.triggered.connect(self._new_project)
-        file_menu.addAction(new_proj_act)
-
-        open_proj_act = QAction("Open Project…", self)
-        open_proj_act.setShortcut(QKeySequence("Ctrl+O"))
-        open_proj_act.triggered.connect(self._open_project)
-        file_menu.addAction(open_proj_act)
-
-        save_proj_act = QAction("Save Project", self)
-        save_proj_act.setShortcut(QKeySequence("Ctrl+S"))
-        save_proj_act.triggered.connect(self._save_project)
-        file_menu.addAction(save_proj_act)
-
-        save_as_act = QAction("Save Project As…", self)
-        save_as_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
-        save_as_act.triggered.connect(self._save_project_as)
-        file_menu.addAction(save_as_act)
-
-        file_menu.addSeparator()
-
-        open_act = QAction("Open Image…", self)
-        open_act.setShortcut(QKeySequence("Ctrl+Shift+O"))
-        open_act.triggered.connect(self._open_image)
-        file_menu.addAction(open_act)
-
-        import_layer_act = QAction("Import Image as Layer…", self)
-        import_layer_act.setShortcut(QKeySequence("Ctrl+Shift+O"))
-        import_layer_act.setToolTip("Add an image as a draggable layer without replacing the canvas")
-        import_layer_act.triggered.connect(self._import_image_as_layer)
-        file_menu.addAction(import_layer_act)
-
-        file_menu.addSeparator()
-
-        export_act = QAction("Export…", self)
-        export_act.setShortcut(QKeySequence("Ctrl+E"))
-        export_act.triggered.connect(self._export)
-        file_menu.addAction(export_act)
-
-        export_all_act = QAction("Export All Assets…", self)
-        export_all_act.setShortcut(QKeySequence("Ctrl+Shift+E"))
-        export_all_act.setToolTip("Generate cover, wide, hero, logo and icon from the current project")
-        export_all_act.triggered.connect(self._export_all_assets)
-        file_menu.addAction(export_all_act)
-
-        file_menu.addSeparator()
-
-        open_exports_act = QAction("Open Exports Folder", self)
-        open_exports_act.triggered.connect(self._open_exports_folder)
-        file_menu.addAction(open_exports_act)
-
-        file_menu.addSeparator()
-
-        import_brushes_menu = file_menu.addMenu("Import Brushes")
-        imp_brush_zip_act = QAction("From ZIP Pack…", self)
-        imp_brush_zip_act.setShortcut(QKeySequence("Ctrl+Shift+B"))
-        imp_brush_zip_act.triggered.connect(self._import_brushes_zip)
-        import_brushes_menu.addAction(imp_brush_zip_act)
-        imp_brush_files_act = QAction("Individual Files…", self)
-        imp_brush_files_act.triggered.connect(self._import_brushes_files)
-        import_brushes_menu.addAction(imp_brush_files_act)
-
-        import_textures_menu = file_menu.addMenu("Import Textures")
-        imp_tex_files_act = QAction("Import Texture Files…", self)
-        imp_tex_files_act.triggered.connect(self._import_texture_files)
-        import_textures_menu.addAction(imp_tex_files_act)
-        imp_tex_folder_act = QAction("Open Textures Folder…", self)
-        imp_tex_folder_act.triggered.connect(self._open_textures_folder)
-        import_textures_menu.addAction(imp_tex_folder_act)
-
-        file_menu.addSeparator()
-
-        quit_act = QAction("Quit", self)
-        quit_act.setShortcut(QKeySequence("Ctrl+Q"))
-        quit_act.triggered.connect(self.close)
-        file_menu.addAction(quit_act)
-
-        # ═══════════════════════════════════════════════════════════════════
-        # EDIT
-        # ═══════════════════════════════════════════════════════════════════
-        edit_menu = menubar.addMenu("Edit")
-
-        undo_act = QAction("Undo", self)
-        undo_act.setShortcut(QKeySequence("Ctrl+Z"))
-        undo_act.triggered.connect(self._undo)
-        edit_menu.addAction(undo_act)
-
-        redo_act = QAction("Redo", self)
-        redo_act.setShortcut(QKeySequence("Ctrl+Y"))
-        redo_act.triggered.connect(self._redo)
-        edit_menu.addAction(redo_act)
-
-        edit_menu.addSeparator()
-
-        dup_layer_act = QAction("Duplicate Layer", self)
-        dup_layer_act.setShortcut(QKeySequence("Ctrl+D"))
-        dup_layer_act.triggered.connect(self._duplicate_layer)
-        edit_menu.addAction(dup_layer_act)
-
-        del_layer_act = QAction("Delete Layer", self)
-        del_layer_act.setShortcut(QKeySequence("Delete"))
-        del_layer_act.triggered.connect(self._delete_layer)
-        edit_menu.addAction(del_layer_act)
-
-        edit_menu.addSeparator()
-
-        crop_act = QAction("Crop Layer", self)
-        crop_act.setShortcut(QKeySequence("Ctrl+Shift+C"))
-        crop_act.triggered.connect(lambda: self._toggle_crop(True))
-        edit_menu.addAction(crop_act)
-
-        edit_menu.addSeparator()
-
-        reset_act = QAction("Reset Filters", self)
-        reset_act.triggered.connect(self._reset_filters)
-        edit_menu.addAction(reset_act)
-
-        edit_menu.addSeparator()
-
-        prefs_act = QAction("Preferences…", self)
-        prefs_act.triggered.connect(self._open_preferences)
-        edit_menu.addAction(prefs_act)
-
-        # ═══════════════════════════════════════════════════════════════════
-        # BRUSHES
-        # ═══════════════════════════════════════════════════════════════════
-        brushes_menu = menubar.addMenu("Brushes")
-
-        toggle_brush_act = QAction("Toggle Brush Panel", self)
-        toggle_brush_act.setShortcut(QKeySequence("B"))
-        toggle_brush_act.setCheckable(True)
-        toggle_brush_act.triggered.connect(self._toggle_brush_panel)
-        self._brush_menu_act = toggle_brush_act
-        brushes_menu.addAction(toggle_brush_act)
-
-        eraser_act = QAction("Eraser Tool", self)
-        eraser_act.setShortcut(QKeySequence("E"))
-        eraser_act.triggered.connect(self._activate_eraser_tool)
-        brushes_menu.addAction(eraser_act)
-
-        brushes_menu.addSeparator()
-
-        create_brush_act = QAction("Create Brush From Image…", self)
-        create_brush_act.setToolTip("Convert a texture or image file into a custom brush")
-        create_brush_act.triggered.connect(self._create_brush_from_image)
-        brushes_menu.addAction(create_brush_act)
-
-        brushes_menu.addSeparator()
-
-        brush_zip_act = QAction("Import ZIP Pack…", self)
-        brush_zip_act.setShortcut(QKeySequence("Ctrl+Shift+B"))
-        brush_zip_act.triggered.connect(self._import_brushes_zip)
-        brushes_menu.addAction(brush_zip_act)
-
-        brush_files_act = QAction("Import Individual Files…", self)
-        brush_files_act.triggered.connect(self._import_brushes_files)
-        brushes_menu.addAction(brush_files_act)
-
-        brushes_menu.addSeparator()
-
-        reload_brushes_act = QAction("Reload Brush Library", self)
-        reload_brushes_act.triggered.connect(lambda: self.brush_panel._load_brushes())
-        brushes_menu.addAction(reload_brushes_act)
-
-        clear_cache_act = QAction("Clear Thumbnail Cache + Reload", self)
-        clear_cache_act.triggered.connect(self._clear_brush_cache)
-        brushes_menu.addAction(clear_cache_act)
-
-        open_brushes_dir_act = QAction("Open Brushes Folder…", self)
-        open_brushes_dir_act.triggered.connect(self._open_brushes_folder)
-        brushes_menu.addAction(open_brushes_dir_act)
 
         # ═══════════════════════════════════════════════════════════════════
         # FONTS
@@ -597,6 +345,33 @@ class MainWindow(QMainWindow):
         open_exports_sync_act = QAction("Open Exports Folder…", self)
         open_exports_sync_act.triggered.connect(self._open_exports_folder)
         sync_menu.addAction(open_exports_sync_act)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # CLOUD SYNC
+        # ═══════════════════════════════════════════════════════════════════
+        cloud_menu = menubar.addMenu("Cloud Sync")
+
+        drive_connect_act = QAction("Connect Google Account…", self)
+        drive_connect_act.triggered.connect(self._open_drive_connect)
+        cloud_menu.addAction(drive_connect_act)
+
+        cloud_menu.addSeparator()
+
+        drive_upload_act = QAction("⬆  Upload to Drive", self)
+        drive_upload_act.setShortcut(QKeySequence("Ctrl+Shift+U"))
+        drive_upload_act.triggered.connect(self._drive_upload_now)
+        cloud_menu.addAction(drive_upload_act)
+
+        drive_download_act = QAction("⬇  Download from Drive", self)
+        drive_download_act.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        drive_download_act.triggered.connect(self._drive_download_now)
+        cloud_menu.addAction(drive_download_act)
+
+        cloud_menu.addSeparator()
+
+        drive_status_act = QAction("Sync Status…", self)
+        drive_status_act.triggered.connect(self._open_drive_status)
+        cloud_menu.addAction(drive_status_act)
 
         # ═══════════════════════════════════════════════════════════════════
         # HELP
@@ -664,7 +439,7 @@ class MainWindow(QMainWindow):
         corner_layout.setSpacing(3)
 
         divider = QLabel("|")
-        divider.setStyleSheet("color:#333; font-size:15px; padding: 0 4px;")
+        divider.setStyleSheet("color:#0d2030; font-size:15px; padding: 0 4px;")
         corner_layout.addWidget(divider)
 
         self._btn_undo = QPushButton("↩ Undo")
@@ -680,7 +455,7 @@ class MainWindow(QMainWindow):
         corner_layout.addWidget(self._btn_redo)
 
         divider2 = QLabel("|")
-        divider2.setStyleSheet("color:#333; font-size:15px; padding: 0 4px;")
+        divider2.setStyleSheet("color:#0d2030; font-size:15px; padding: 0 4px;")
         corner_layout.addWidget(divider2)
 
         self._btn_crop = QPushButton("✂ Crop")
@@ -707,18 +482,11 @@ class MainWindow(QMainWindow):
         corner_layout.addWidget(self._btn_crop_cancel)
 
         divider3 = QLabel("|")
-        divider3.setStyleSheet("color:#333; font-size:15px; padding: 0 4px;")
+        divider3.setStyleSheet("color:#0d2030; font-size:15px; padding: 0 4px;")
         corner_layout.addWidget(divider3)
 
-        self._btn_brush = QPushButton("🖌 Brush")
-        self._btn_brush.setToolTip("Toggle Brush Panel  [B]")
-        self._btn_brush.setCheckable(True)
-        self._btn_brush.setStyleSheet(btn_style)
-        self._btn_brush.clicked.connect(lambda checked: self._toggle_brush_panel(checked))
-        corner_layout.addWidget(self._btn_brush)
-
         divider_sync = QLabel("|")
-        divider_sync.setStyleSheet("color:#333; font-size:15px; padding: 0 4px;")
+        divider_sync.setStyleSheet("color:#0d2030; font-size:15px; padding: 0 4px;")
         corner_layout.addWidget(divider_sync)
 
         self._btn_sync = QPushButton("⇪ Sync to Steam")
@@ -775,18 +543,14 @@ class MainWindow(QMainWindow):
     def editor_panel(self) -> EditorPanel:
         return self.tab_manager.editor_panel
 
-    @property
-    def brush_panel(self) -> BrushPanel:
-        return self.tab_manager.brush_panel
-
     def _build_status_bar(self):
         bar_style = """
             QStatusBar {
-                background: #0e0e0e;
-                color: #555;
+                background: #040608;
+                color: #253545;
                 font-size: 11px;
                 font-family: 'Courier New', monospace;
-                border-top: 1px solid #2a2a2a;
+                border-top: 1px solid #0d2030;
                 padding: 0px;
             }
             QStatusBar::item { border: none; }
@@ -1148,6 +912,67 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dlg.exec()
+    # ── Cloud Sync handlers ───────────────────────────────────────────────────
+
+    def _open_drive_connect(self):
+        """Cloud Sync → Connect Google Account — opens auth in browser."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel
+        from app.ui.drive_sync_panel import DriveSyncPanel
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Google Drive Sync")
+        dlg.setMinimumWidth(460)
+        dlg.setStyleSheet("QDialog { background: #080a0e; }")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(DriveSyncPanel())
+        dlg.exec()
+
+    def _drive_upload_now(self):
+        """Cloud Sync → Upload to Drive."""
+        import threading
+        self._status_label.setText("[Drive] Uploading…")
+        def _work():
+            from app.services.drive_sync import upload_all, is_configured, is_authenticated
+            if not is_configured() or not is_authenticated():
+                self._status_label.setText("[Drive] Not connected — use Cloud Sync → Connect Google Account")
+                return
+            r = upload_all(on_progress=lambda m: self._status_label.setText(f"[Drive] {m}"))
+            n = r["uploaded"]
+            self._status_label.setText(f"[Drive] ✓ {n} files uploaded")
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _drive_download_now(self):
+        """Cloud Sync → Download from Drive."""
+        import threading
+        self._status_label.setText("[Drive] Downloading…")
+        def _work():
+            from app.services.drive_sync import download_all, is_configured, is_authenticated
+            if not is_configured() or not is_authenticated():
+                self._status_label.setText("[Drive] Not connected — use Cloud Sync → Connect Google Account")
+                return
+            r = download_all(on_progress=lambda m: self._status_label.setText(f"[Drive] {m}"))
+            n = r["downloaded"]
+            self._status_label.setText(f"[Drive] ✓ {n} files downloaded")
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _open_drive_status(self):
+        """Cloud Sync → Sync Status."""
+        from app.services.drive_sync import get_status
+        s = get_status()
+        if not s["configured"]:
+            msg = "client_secret.json not found in project root."
+        elif s["authenticated"]:
+            msg = "✓ Connected to Google Drive"
+        else:
+            msg = "Not connected. Use Cloud Sync → Connect Google Account."
+        from PySide6.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        box.setWindowTitle("Drive Sync Status")
+        box.setText(msg)
+        box.setStyleSheet("QMessageBox { background:#080a0e; color:#c8d8e8; font-family:'Courier New'; }"
+                          "QLabel { color:#c8d8e8; } QPushButton { min-width:80px; }")
+        box.exec()
+
     # ── File handlers ─────────────────────────────────────────────────────────
 
     def _import_image_as_layer(self):
@@ -1398,6 +1223,13 @@ class MainWindow(QMainWindow):
 
         root.addWidget(_hline())
 
+        # ── GOOGLE DRIVE SYNC ──────────────────────────────────────────────
+        from app.ui.drive_sync_panel import DriveSyncPanel
+        sync_panel = DriveSyncPanel()
+        root.addWidget(sync_panel)
+
+        root.addWidget(_hline())
+
         # ── BUTTONS ────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -1411,35 +1243,6 @@ class MainWindow(QMainWindow):
 
     # ── Brushes handlers ───────────────────────────────────────────────────────
 
-    def _create_brush_from_image(self):
-        """Brushes → Create Brush From Image — converts a PNG/JPEG to a brush file."""
-        import shutil
-        from app.config import ASSETS_DIR
-        brushes_dir = os.path.join(ASSETS_DIR, "brushes")
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Image to Convert to Brush", "",
-            "Images (*.png *.jpg *.jpeg *.bmp);;All Files (*)"
-        )
-        if not path:
-            return
-        os.makedirs(brushes_dir, exist_ok=True)
-        name = os.path.splitext(os.path.basename(path))[0] + ".png"
-        dst  = os.path.join(brushes_dir, name)
-        # Convert to grayscale PNG for use as brush stamp
-        try:
-            from PIL import Image as PILImage, ImageOps
-            img = PILImage.open(path).convert("L")  # grayscale
-            img = ImageOps.invert(img)               # dark areas = brush density
-            img.save(dst, "PNG")
-            if hasattr(self, 'brush_panel'):
-                self.brush_panel._load_brushes()
-            self._status_label.setText(f"Brush created: {name}")
-            QMessageBox.information(self, "Brush Created",
-                                    f"Brush saved as:\n{dst}\n\nIt is now available in the Brush Panel.")
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not create brush:\n{e}")
-
-    # ── Fonts handlers ─────────────────────────────────────────────────────────
 
     def _reload_font_library(self):
         """Fonts → Reload Font Library — re-scans fonts folder and refreshes combo."""
@@ -1628,9 +1431,6 @@ class MainWindow(QMainWindow):
             ("Delete",           "Delete layer"),
             ("Ctrl+Shift+C",     "Crop layer"),
             ("BRUSHES", None),
-            ("B",                "Toggle brush panel"),
-            ("E",                "Eraser tool"),
-            ("Ctrl+Shift+B",     "Import brush ZIP"),
             ("SYNC", None),
             ("Ctrl+Shift+S",     "Sync to Steam"),
             ("TABS", None),

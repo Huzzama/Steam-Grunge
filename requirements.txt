@@ -4,3 +4,8 @@ Pillow>=10.0.0
 requests>=2.31.0
 numpy>=1.24.0
 opencv-python>=4.8.0
+# Google Drive sync
+google-auth>=2.29.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.127.0

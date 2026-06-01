@@ -46,50 +46,50 @@ def _hline():
 # ── Dialog ────────────────────────────────────────────────────────────────────
 DIALOG_STYLE = """
 QDialog {
-    background: #141414;
+    background: #060c14;
     color: #ccc;
     font-family: 'Courier New', monospace;
     font-size: 13px;
 }
 QLabel        { color: #aaa; font-size: 13px; }
-QLabel#title  { color: #88cc88; font-size: 15px; font-weight: bold; letter-spacing: 2px; }
+QLabel#title  { color: #38bdf8; font-size: 15px; font-weight: bold; letter-spacing: 2px; }
 QLabel#section{ color: #666;   font-size: 11px; letter-spacing: 2px; padding-top: 6px; }
-QLabel#ok     { color: #88cc88; }
+QLabel#ok     { color: #38bdf8; }
 QLabel#err    { color: #cc6666; }
 QLabel#warn   { color: #ccaa44; }
 QLineEdit {
-    background: #1a1a1a; border: 1px solid #333; color: #ddd;
+    background: #060c14; border: 1px solid #0d2030; color: #ddd;
     font-family: 'Courier New'; font-size: 13px;
     padding: 4px 8px; border-radius: 2px;
 }
 QLineEdit:focus { border-color: #556; }
 QComboBox {
-    background: #1a1a1a; border: 1px solid #333; color: #ccc;
+    background: #060c14; border: 1px solid #0d2030; color: #ccc;
     font-family: 'Courier New'; font-size: 13px;
     padding: 4px 8px; border-radius: 2px; min-height: 26px;
 }
 QComboBox QAbstractItemView {
-    background: #1a1a1a; border: 1px solid #444; color: #ccc;
-    selection-background-color: #2a2a4a;
+    background: #060c14; border: 1px solid #1a4060; color: #ccc;
+    selection-background-color: #0a1828;
 }
 QPushButton {
     background: #1e1e2e; border: 1px solid #3a3a5a; color: #aaa;
     font-family: 'Courier New'; font-size: 13px;
     padding: 6px 16px; border-radius: 2px; min-height: 28px;
 }
-QPushButton:hover   { background: #2a2a4a; color: #ddd; border-color: #5566aa; }
+QPushButton:hover   { background: #0a1828; color: #ddd; border-color: #38bdf8; }
 QPushButton:pressed { background: #111; }
 QPushButton#sync_btn {
-    background: #1a2e1a; border: 1px solid #3a6e3a;
-    color: #88cc88; font-weight: bold; font-size: 14px;
+    background: #1a2e1a; border: 1px solid #38bdf8;
+    color: #38bdf8; font-weight: bold; font-size: 14px;
 }
 QPushButton#sync_btn:hover   { background: #223a22; border-color: #55aa55; }
-QPushButton#sync_btn:disabled { background: #1a1a1a; color: #444; border-color: #2a2a2a; }
+QPushButton#sync_btn:disabled { background: #060c14; color: #444; border-color: #2a2a2a; }
 QProgressBar {
-    background: #1a1a1a; border: 1px solid #333; border-radius: 2px;
+    background: #060c14; border: 1px solid #0d2030; border-radius: 2px;
     text-align: center; color: #666; font-size: 11px; height: 6px;
 }
-QProgressBar::chunk { background: #3a6e3a; border-radius: 2px; }
+QProgressBar::chunk { background: #38bdf8; border-radius: 2px; }
 """
 
 
@@ -223,6 +223,37 @@ class SteamSyncDialog(QDialog):
 
         root.addWidget(_hline())
 
+        # ── GOOGLE DRIVE ──────────────────────────────────────────────────────
+        drive_sec = QLabel("CLOUD BACKUP")
+        drive_sec.setObjectName("section")
+        root.addWidget(drive_sec)
+
+        drive_row = QHBoxLayout()
+
+        # Status indicator
+        self._drive_status_lbl = QLabel()
+        self._drive_status_lbl.setStyleSheet("font-size:11px; color:#555;")
+        drive_row.addWidget(self._drive_status_lbl, 1)
+
+        # Connect / Upload buttons
+        self._drive_connect_btn = QPushButton("Connect Google Account")
+        self._drive_connect_btn.setStyleSheet(
+            "background:#0a2040; border:1px solid #1a4080; color:#60a5fa; "
+            "font-size:12px; padding:5px 12px; border-radius:2px;"
+        )
+        self._drive_connect_btn.clicked.connect(self._drive_connect)
+        drive_row.addWidget(self._drive_connect_btn)
+
+        self._drive_upload_btn = QPushButton("⬆ Upload to Drive")
+        self._drive_upload_btn.setEnabled(False)
+        self._drive_upload_btn.clicked.connect(self._drive_upload)
+        drive_row.addWidget(self._drive_upload_btn)
+
+        root.addLayout(drive_row)
+        self._refresh_drive_status()
+
+        root.addWidget(_hline())
+
         # ── Buttons ───────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         btn_cancel = QPushButton("Cancel")
@@ -276,7 +307,7 @@ class SteamSyncDialog(QDialog):
             suffix = _SUFFIX.get(tpl, "").format(id=app_id)
             row.addWidget(QLabel(f"  {_LABELS.get(tpl, tpl)}"))
             arrow = QLabel("→")
-            arrow.setStyleSheet("color:#3a6e3a;")
+            arrow.setStyleSheet("color:#38bdf8;")
             row.addWidget(arrow)
             dest_lbl = QLabel(suffix)
             dest_lbl.setStyleSheet("color:#7788aa; font-size:12px;")
@@ -328,7 +359,7 @@ class SteamSyncDialog(QDialog):
             self._appid_edit.setText(str(best["id"]))
             self._lookup_label.setText(
                 f"✔  Found: {best['name']}  (AppID {best['id']})")
-            self._lookup_label.setStyleSheet("color:#88cc88;")
+            self._lookup_label.setStyleSheet("color:#38bdf8;")
             self._sync_btn.setEnabled(True)
         else:
             self._candidate_combo.blockSignals(False)
@@ -346,7 +377,7 @@ class SteamSyncDialog(QDialog):
             # Update label to reflect the actually selected result (fixes stale label bug)
             self._lookup_label.setText(
                 f"✔  Selected: {data['name']}  (AppID {data['id']})")
-            self._lookup_label.setStyleSheet("color:#88cc88;")
+            self._lookup_label.setStyleSheet("color:#38bdf8;")
             self._rebuild_files_list()
 
     def _on_name_changed(self, _text: str):
@@ -359,6 +390,94 @@ class SteamSyncDialog(QDialog):
             self._folder_label.setText(f"Grid folder:  {path}")
 
     # ── Sync ─────────────────────────────────────────────────────────────────
+
+    # ── Google Drive helpers ──────────────────────────────────────────────────
+
+    def _refresh_drive_status(self):
+        try:
+            from app.services.drive_sync import get_status
+            s = get_status()
+            if not s["configured"]:
+                self._drive_status_lbl.setText("client_secret.json not found in project root")
+                self._drive_status_lbl.setStyleSheet("font-size:11px; color:#ccaa44;")
+                self._drive_connect_btn.setEnabled(False)
+                self._drive_upload_btn.setEnabled(False)
+            elif s["authenticated"]:
+                self._drive_status_lbl.setText("✓ Connected to Google Drive")
+                self._drive_status_lbl.setStyleSheet("font-size:11px; color:#4ade80;")
+                self._drive_connect_btn.setText("Disconnect")
+                self._drive_connect_btn.setStyleSheet(
+                    "background:transparent; border:1px solid #4a1515; color:#f87171; "
+                    "font-size:12px; padding:5px 12px; border-radius:2px;"
+                )
+                try:
+                    self._drive_connect_btn.clicked.disconnect()
+                except RuntimeError:
+                    pass
+                self._drive_connect_btn.clicked.connect(self._drive_disconnect)
+                self._drive_connect_btn.setEnabled(True)
+                self._drive_upload_btn.setEnabled(True)
+            else:
+                self._drive_status_lbl.setText("Not connected")
+                self._drive_status_lbl.setStyleSheet("font-size:11px; color:#555;")
+                self._drive_connect_btn.setText("Connect Google Account")
+                self._drive_connect_btn.setStyleSheet(
+                    "background:#0a2040; border:1px solid #1a4080; color:#60a5fa; "
+                    "font-size:12px; padding:5px 12px; border-radius:2px;"
+                )
+                try:
+                    self._drive_connect_btn.clicked.disconnect()
+                except RuntimeError:
+                    pass
+                self._drive_connect_btn.clicked.connect(self._drive_connect)
+                self._drive_connect_btn.setEnabled(True)
+                self._drive_upload_btn.setEnabled(False)
+        except ImportError:
+            self._drive_status_lbl.setText("Drive sync not available")
+
+    def _drive_connect(self):
+        from app.services.drive_sync import is_configured, authenticate
+        if not is_configured():
+            self._drive_status_lbl.setText("Place client_secret.json in project root first")
+            self._drive_status_lbl.setStyleSheet("font-size:11px; color:#fbbf24;")
+            return
+        self._drive_connect_btn.setEnabled(False)
+        self._drive_status_lbl.setText("Opening browser…")
+        self._drive_status_lbl.setStyleSheet("font-size:11px; color:#60a5fa;")
+
+        def _done(ok, msg):
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._refresh_drive_status)
+
+        authenticate(on_done=_done)
+
+    def _drive_disconnect(self):
+        from app.services.drive_sync import disconnect
+        disconnect()
+        self._refresh_drive_status()
+
+    def _drive_upload(self):
+        self._drive_upload_btn.setEnabled(False)
+        self._drive_status_lbl.setText("Uploading…")
+        self._drive_status_lbl.setStyleSheet("font-size:11px; color:#60a5fa;")
+
+        import threading
+        def _work():
+            from app.services.drive_sync import upload_all
+            from PySide6.QtCore import QTimer
+            r = upload_all()
+            n = r["uploaded"]
+            errs = r["errors"]
+            msg   = f"✓ {n} files uploaded" if not errs else f"Error: {errs[0]}"
+            color = "#4ade80" if not errs else "#f87171"
+            def _update():
+                self._drive_status_lbl.setText(msg)
+                self._drive_status_lbl.setStyleSheet(f"font-size:11px; color:{color};")
+                self._drive_upload_btn.setEnabled(True)
+            QTimer.singleShot(0, _update)
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def _do_sync(self):
         # Validate AppID
         appid_txt = self._appid_edit.text().strip()
@@ -391,7 +510,7 @@ class SteamSyncDialog(QDialog):
         # Show result
         lines = []
         for path in result.installed:
-            lines.append(f"<span style='color:#88cc88'>✔</span>  {os.path.basename(path)}")
+            lines.append(f"<span style='color:#38bdf8'>✔</span>  {os.path.basename(path)}")
         for tpl in result.skipped:
             lines.append(f"<span style='color:#666'>—</span>  {tpl}  (skipped)")
         for err in result.errors:

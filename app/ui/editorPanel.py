@@ -32,32 +32,33 @@ def _wrap(layout) -> QWidget:
 
 PANEL_STYLE = """
 QWidget#EditorPanel {
-    background: #161616;
-    border-left: 1px solid #2a2a2a;
+    background: #050810;
+    border-left: 1px solid #0d2030;
 }
 QGroupBox {
-    border: 1px solid #2a2a2a;
-    border-radius: 2px;
-    margin-top: 8px;
+    border: 1px solid #0d2030;
+    border-radius: 1px;
+    margin-top: 10px;
     font-family: 'Courier New', monospace;
-    font-size: 14px;
+    font-size: 10px;
     font-weight: bold;
-    color: #888;
-    letter-spacing: 2px;
+    color: #1a3a50;
+    letter-spacing: 3px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 6px;
-    padding: 0 4px;
+    padding: 0 6px;
+    background: #050810;
 }
 QLabel {
-    color: #999;
+    color: #506070;
     font-family: 'Courier New', monospace;
-    font-size: 14px;
+    font-size: 12px;
 }
 QLabel#slider_val {
-    color: #ccc;
-    font-size: 14px;
+    color: #38bdf8;
+    font-size: 12px;
     min-width: 28px;
 }
 QSlider::groove:horizontal {
@@ -80,9 +81,9 @@ QSlider::sub-page:horizontal {
     border-radius: 1px;
 }
 QComboBox {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    color: #ccc;
+    background: #060c14;
+    border: 1px solid #0d2030;
+    color: #80a0b0;
     font-family: 'Courier New', monospace;
     font-size: 14px;
     padding: 4px 6px;
@@ -90,27 +91,27 @@ QComboBox {
 }
 QComboBox::drop-down { border: none; }
 QComboBox QAbstractItemView {
-    background: #1a1a1a;
-    border: 1px solid #444;
-    color: #ccc;
-    selection-background-color: #2a2a4a;
+    background: #060c14;
+    border: 1px solid #1a4060;
+    color: #80a0b0;
+    selection-background-color: #0d2a3e;
 }
 QCheckBox {
-    color: #aaa;
+    color: #607888;
     font-family: 'Courier New', monospace;
     font-size: 14px;
 }
 QCheckBox::indicator {
     width: 12px; height: 12px;
-    background: #222; border: 1px solid #444;
+    background: #060c14; border: 1px solid #1a4060;
 }
 QCheckBox::indicator:checked {
-    background: #555; border-color: #888;
+    background: #555; border-color: #304a5a;
 }
 QLineEdit {
-    background: #111;
-    border: 1px solid #333;
-    color: #ccc;
+    background: #040608;
+    border: 1px solid #0d2030;
+    color: #80a0b0;
     font-family: 'Courier New', monospace;
     font-size: 14px;
     padding: 4px 6px;
@@ -132,8 +133,8 @@ QPushButton:hover {
 }
 QPushButton#export_btn {
     background: #1a2e1a;
-    border-color: #3a6e3a;
-    color: #88cc88;
+    border-color: #38bdf8;
+    color: #38bdf8;
     font-size: 14px;
     padding: 8px;
 }
@@ -430,7 +431,7 @@ class EditorPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea { border: none; background: #161616; }")
+        scroll.setStyleSheet("QScrollArea { border: none; background: #050810; }")
         outer.addWidget(scroll)
 
         container = QWidget()
@@ -617,7 +618,7 @@ class EditorPanel(QWidget):
                         padding:2px 6px; font-family:'Courier New'; font-size:11px; }
             QComboBox::drop-down { border:none; }
             QComboBox QAbstractItemView { background:#1a1a28; color:#ccc;
-                                          selection-background-color:#2a2a4a; }
+                                          selection-background-color:#0a1828; }
         """)
         self._layer_blend_top.currentTextChanged.connect(self._on_blend_top_changed)
         blend_row.addWidget(self._layer_blend_top, 1)
@@ -669,7 +670,7 @@ class EditorPanel(QWidget):
             QListWidget::item { border-bottom: 1px solid #1e1e2e; }
             QListWidget::item:selected { background: #1e3050; }
             QScrollBar:vertical { background:#0d0d0d; width:8px; border:none; }
-            QScrollBar::handle:vertical { background:#2a2a4a; border-radius:4px; min-height:20px; }
+            QScrollBar::handle:vertical { background:#0a1828; border-radius:4px; min-height:20px; }
         """)
         self.layer_list.currentRowChanged.connect(self._on_layer_list_select)
         self.layer_list.clicked.connect(self._on_layer_list_clicked)
@@ -698,7 +699,7 @@ class EditorPanel(QWidget):
                 font-family:'Segoe UI'; font-size:12px;
             }
             QMenu::item { padding:6px 24px 6px 10px; }
-            QMenu::item:selected { background:#2a2a4a; color:#ffffff; }
+            QMenu::item:selected { background:#0a1828; color:#ffffff; }
             QMenu::separator { height:1px; background:#2e2e4a; margin:3px 8px; }
             QMenu::item:disabled { color:#555566; }
         """
@@ -1890,9 +1891,9 @@ class EditorPanel(QWidget):
 
     # ── Color Palette ─────────────────────────────────────────────────────────
 
-    def set_brush_panel(self, bp):
-        """Called by MainWindow after BrushPanel is created."""
-        self._brush_panel_ref = bp
+    def set_brush_panel(self, bp=None):
+        """Stub — brush panel removed."""
+        self._brush_panel_ref = None
 
     # ── Font panel helpers ────────────────────────────────────────────────────
 

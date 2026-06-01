@@ -74,4 +74,8 @@ secrets.json
 *.log
 
 # ── Nested repo (Steam-Grunge subfolder if cloned inside project) ─────────────
-Steam-Grunge/
+Steam-Grunge/client_secret.json
+token.json
+__pycache__/
+.venv/
+*.pyc

@@ -83,7 +83,7 @@ class _PlaceholderPanel(QWidget):
         self._icon  = QLabel("◻")
         self._icon.setAlignment(Qt.AlignCenter)
         self._icon.setStyleSheet(
-            f"color:#2a2a4a;font-size:28px;background:transparent;")
+            f"color:#0a1828;font-size:28px;background:transparent;")
         self._text = QLabel("Select a layer to\nedit its properties")
         self._text.setAlignment(Qt.AlignCenter)
         self._text.setWordWrap(True)
@@ -468,7 +468,7 @@ class LayerPropertiesWidget(QWidget):
         scroll.setStyleSheet(
             "QScrollArea{border:none;background:#1a1a22;}"
             "QScrollBar:vertical{background:#111;width:5px;border:none;}"
-            "QScrollBar::handle:vertical{background:#2a2a4a;border-radius:2px;min-height:16px;}"
+            "QScrollBar::handle:vertical{background:#0a1828;border-radius:2px;min-height:16px;}"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
         outer.addWidget(scroll)
 

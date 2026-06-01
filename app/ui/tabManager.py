@@ -12,7 +12,6 @@ from PySide6.QtGui  import QColor
 from app.ui.searchPanel        import SearchPanel
 from app.ui.editorPanel        import EditorPanel
 from app.ui.canvas.previewCanvas import PreviewCanvas
-from app.ui.brushPanel         import BrushPanel
 from app.ui.floatingContextTb  import FloatingContextTb
 from app.state                 import AppState          # class, not singleton
 
@@ -48,24 +47,35 @@ class WorkspaceTab(QWidget):
         self.search_panel = SearchPanel()
         self.search_panel.artwork_selected.connect(self._on_artwork_selected)
         self.search_panel.artwork_layer_ready.connect(self._on_artwork_layer_ready)
-        self.search_panel.setFixedWidth(340)
+        self.search_panel.setMinimumWidth(280)
+        self.search_panel.setMaximumWidth(380)
         splitter.addWidget(self.search_panel)
 
-        # Center — canvas
+        # Center — canvas (takes all remaining space)
         self.preview_canvas = PreviewCanvas()
+        self.preview_canvas.setSizePolicy(
+            __import__("PySide6.QtWidgets", fromlist=["QSizePolicy"]).QSizePolicy.Expanding,
+            __import__("PySide6.QtWidgets", fromlist=["QSizePolicy"]).QSizePolicy.Expanding,
+        )
         splitter.addWidget(self.preview_canvas)
 
         # Right — editor
         self.editor_panel = EditorPanel()
         self.editor_panel.settings_changed.connect(self.schedule_compose)
         self.editor_panel.template_changed.connect(self._on_template_changed)
-        self.editor_panel.setFixedWidth(420)
+        self.editor_panel.setMinimumWidth(340)
+        self.editor_panel.setMaximumWidth(480)
         self.editor_panel.setContentsMargins(0, 0, 8, 0)
         splitter.addWidget(self.editor_panel)
 
+        # Canvas gets all extra space, panels stay compact
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
+
+        # Set initial sizes: left=320, canvas=fills-rest, right=400
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: splitter.setSizes([320, 9999, 400]))
 
         self.editor_panel.set_canvas(self.preview_canvas, tab_state=self.state, tab_ref=self)
 
@@ -75,14 +85,7 @@ class WorkspaceTab(QWidget):
         self.ctx_tb = FloatingContextTb(self.preview_canvas)
         self.ctx_tb.set_canvas(self.preview_canvas)
 
-        # Brush panel (hidden by default)
-        self.brush_panel = BrushPanel()
-        self.brush_panel.setFixedWidth(248)
-        self.brush_panel.setVisible(False)
-        self.brush_panel.set_canvas(self.preview_canvas)
-        root.addWidget(self.brush_panel, 0)
-
-        self.editor_panel.set_brush_panel(self.brush_panel)
+        # No brush panel — feature removed
 
         # Initial render
         self._do_compose()
@@ -187,11 +190,6 @@ class WorkspaceTab(QWidget):
         self.preview_canvas.redo()
         self.editor_panel._refresh_layer_list()
 
-    # ── brush panel toggle ────────────────────────────────────────────────────
-    def toggle_brush_panel(self, visible: bool | None = None):
-        if visible is None:
-            visible = not self.brush_panel.isVisible()
-        self.brush_panel.setVisible(visible)
 
 
 # ── Tab bar widget ─────────────────────────────────────────────────────────────
@@ -210,16 +208,17 @@ class TabBar(QWidget):
             color: {fg};
             border: none;
             border-bottom: {bb};
-            border-right: 1px solid #1e1e1e;
-            font-family: 'Courier New';
-            font-size: 12px;
+            border-right: 1px solid #0a1520;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            letter-spacing: 1px;
             padding: 0 10px;
-            min-width: 120px;
+            min-width: 100px;
             max-width: 200px;
             height: 30px;
             text-align: left;
         }}
-        QPushButton:hover {{ background: #222233; color: #ddd; }}
+        QPushButton:hover {{ background: #080f18; color: #38bdf8; }}
     """
     _CLOSE_STYLE = """
         QPushButton {
@@ -237,7 +236,7 @@ class TabBar(QWidget):
     _ADD_STYLE = """
         QPushButton {
             background: transparent;
-            color: #666;
+            color: #1a3040;
             border: none;
             border-left: 1px solid #1e1e1e;
             font-size: 18px;
@@ -245,13 +244,13 @@ class TabBar(QWidget):
             min-width: 38px;
             height: 30px;
         }
-        QPushButton:hover { color: #88cc88; background: #1a1a2a; }
+        QPushButton:hover { color: #38bdf8; background: #1a1a2a; }
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(30)
-        self.setStyleSheet("background:#111111; border-bottom:1px solid #1e1e1e;")
+        self.setStyleSheet("background:#040608; border-bottom:1px solid #0d2030;")
 
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -324,9 +323,9 @@ class TabBar(QWidget):
                 continue
             active = (i == self._active)
             btn.setStyleSheet(self._TAB_STYLE.format(
-                bg  = "#1e1e2e" if active else "#111111",
-                fg  = "#ddddff" if active else "#666677",
-                bb  = "2px solid #5566cc" if active else "2px solid transparent",
+                bg  = "#060c14" if active else "#040608",
+                fg  = "#38bdf8" if active else "#253545",
+                bb  = "2px solid #38bdf8" if active else "2px solid transparent",
             ))
 
     def remove_tab(self, idx: int):
@@ -444,9 +443,6 @@ class TabManager(QWidget):
     def editor_panel(self) -> EditorPanel:
         return self.current_tab().editor_panel
 
-    @property
-    def brush_panel(self) -> BrushPanel:
-        return self.current_tab().brush_panel
 
     def rename_current(self, label: str):
         idx = self._stack.currentIndex()

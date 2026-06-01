@@ -151,7 +151,7 @@ class ToolBar(QWidget):
         dot.setAlignment(Qt.AlignCenter)
         dot.setFixedHeight(20)
         dot.setStyleSheet(
-            "color: #2a2a4a; font-size: 12px; background: transparent;"
+            "color: #0a1828; font-size: 12px; background: transparent;"
             "border: none;")
         layout.addWidget(dot)
         layout.addSpacing(6)

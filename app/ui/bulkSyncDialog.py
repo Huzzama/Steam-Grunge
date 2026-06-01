@@ -24,11 +24,11 @@ QDialog {
     font-size: 13px;
 }
 QLabel           { color: #aaa; font-size: 13px; }
-QLabel#title     { color: #88cc88; font-size: 15px; font-weight: bold;
+QLabel#title     { color: #38bdf8; font-size: 15px; font-weight: bold;
                    letter-spacing: 2px; }
 QLabel#section   { color: #555; font-size: 11px; letter-spacing: 2px;
                    padding-top: 4px; }
-QLabel#stat_ok   { color: #88cc88; font-size: 13px; }
+QLabel#stat_ok   { color: #38bdf8; font-size: 13px; }
 QLabel#stat_warn { color: #ccaa44; font-size: 13px; }
 QLabel#stat_err  { color: #cc6666; font-size: 13px; }
 QScrollArea      { border: none; background: transparent; }
@@ -39,20 +39,20 @@ QPushButton {
     font-family: 'Courier New'; font-size: 13px;
     padding: 6px 16px; border-radius: 2px; min-height: 28px;
 }
-QPushButton:hover   { background: #2a2a4a; color: #ddd; border-color: #5566aa; }
+QPushButton:hover   { background: #0a1828; color: #ddd; border-color: #38bdf8; }
 QPushButton:pressed { background: #111; }
 QPushButton#primary {
-    background: #1a2e1a; border: 1px solid #3a6e3a;
-    color: #88cc88; font-weight: bold; font-size: 14px;
+    background: #1a2e1a; border: 1px solid #38bdf8;
+    color: #38bdf8; font-weight: bold; font-size: 14px;
 }
 QPushButton#primary:hover { background: #223a22; border-color: #55aa55; }
-QPushButton#primary:disabled { background: #1a1a1a; color: #444;
+QPushButton#primary:disabled { background: #060c14; color: #444;
                                 border-color: #2a2a2a; }
 QProgressBar {
-    background: #1a1a1a; border: 1px solid #333; border-radius: 2px;
+    background: #060c14; border: 1px solid #0d2030; border-radius: 2px;
     height: 6px;
 }
-QProgressBar::chunk { background: #3a6e3a; border-radius: 2px; }
+QProgressBar::chunk { background: #38bdf8; border-radius: 2px; }
 """
 
 _STATUS_COLOR = {
