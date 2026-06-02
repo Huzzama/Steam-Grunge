@@ -46,6 +46,9 @@ class MainWindow(QMainWindow):
         # Update checker — fires 3 s after startup so it never delays launch
         QTimer.singleShot(3000, self._check_for_updates)
 
+        # Check PimpMySteam token on startup — non-blocking
+        QTimer.singleShot(1500, self._check_token_on_startup)
+
         # ── Project file state ────────────────────────────────────────────
         self._project_path: str = ""       # "" = not yet saved to disk
         self._project_dirty = False        # True when canvas has unsaved changes
@@ -985,6 +988,14 @@ class MainWindow(QMainWindow):
 
         close_btn.clicked.connect(dlg.accept)
 
+        # Signal bridge to safely update UI from background thread
+        from PySide6.QtCore import QObject, Signal as _Signal
+
+        class _Bridge(QObject):
+            result = _Signal(bool, object)
+
+        bridge = _Bridge()
+
         def _verify():
             token = token_edit.text().strip()
             if not token:
@@ -996,20 +1007,25 @@ class MainWindow(QMainWindow):
             status_lbl.setStyleSheet("font-size:11px;color:#38bdf8;")
 
             def _done(ok, user):
-                def _upd():
-                    verify_btn.setEnabled(True)
-                    if ok and user:
-                        save_token(token)
-                        name = user.get("username", "Connected")
-                        status_lbl.setText(f"✓ Connected as {name}")
-                        status_lbl.setStyleSheet("font-size:11px;color:#4ade80;")
-                        self._status_label.setText(f"[Drive] ✓ PimpMySteam connected as {name}")
-                    else:
-                        status_lbl.setText("✗ Invalid token — get one at pimpmysteam.com")
-                        status_lbl.setStyleSheet("font-size:11px;color:#f87171;")
-                QTimer.singleShot(0, _upd)
+                # Emit signal — always received on main thread
+                bridge.result.emit(ok, user)
+
             verify_async(token, _done)
 
+        def _on_result(ok, user):
+            verify_btn.setEnabled(True)
+            if ok and user:
+                save_token(token_edit.text().strip())
+                name = user.get("username", "Connected")
+                status_lbl.setText(f"✓ Connected as {name}")
+                status_lbl.setStyleSheet("font-size:11px;color:#4ade80;")
+                self._status_label.setText(
+                    f"[Drive] ✓ PimpMySteam connected as {name}")
+            else:
+                status_lbl.setText("✗ Invalid token — get one at pimpmysteam.com")
+                status_lbl.setStyleSheet("font-size:11px;color:#f87171;")
+
+        bridge.result.connect(_on_result)
         verify_btn.clicked.connect(_verify)
         dlg.exec()
 
@@ -1040,6 +1056,28 @@ class MainWindow(QMainWindow):
             n = r["downloaded"]
             self._status_label.setText(f"[Drive] ✓ {n} files downloaded")
         threading.Thread(target=_work, daemon=True).start()
+
+    def _check_token_on_startup(self):
+        """Check if saved token is valid and update status bar. Non-blocking."""
+        from app.services.steamkustom_auth import get_token
+        token = get_token()
+        if not token:
+            return  # No token saved, nothing to do
+
+        def _done(ok, user):
+            from PySide6.QtCore import QTimer as _QT
+            def _upd():
+                if ok and user:
+                    name = user.get("username", "")
+                    self._status_label.setText(
+                        f"[Drive] ✓ Connected as {name} — token active")
+                else:
+                    self._status_label.setText(
+                        "[Drive] Token saved but could not verify — check connection")
+            _QT.singleShot(0, self, _upd)
+
+        from app.services.steamkustom_auth import verify_async
+        verify_async(token, _done)
 
     def _open_drive_status(self):
         """Cloud Sync → Sync Status."""
