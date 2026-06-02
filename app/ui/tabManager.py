@@ -63,6 +63,7 @@ class WorkspaceTab(QWidget):
         self.editor_panel = EditorPanel()
         self.editor_panel.settings_changed.connect(self.schedule_compose)
         self.editor_panel.template_changed.connect(self._on_template_changed)
+        self.editor_panel.sync_requested.connect(self._on_sync_requested)
         self.editor_panel.setMinimumWidth(340)
         self.editor_panel.setMaximumWidth(480)
         self.editor_panel.setContentsMargins(0, 0, 8, 0)
@@ -180,6 +181,38 @@ class WorkspaceTab(QWidget):
         """Run full export flow: AppID confirm (once) → save with Steam filename."""
         from app.services.exportFlow import run_export_flow
         return run_export_flow(self, parent_widget=parent_widget)
+
+    def _on_sync_requested(self):
+        """
+        Called when SYNC TO STEAM button is clicked in EditorPanel.
+        Skips the AppID confirm dialog and opens Sync to Steam directly.
+        Auto-exports current template first so the sync always has fresh files.
+        """
+        from PySide6.QtWidgets import QApplication
+        import os
+        from app.editor import exporter
+
+        # Export current template silently (no dialog)
+        final = self.preview_canvas.compose_to_pil()
+        if final is None:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Sync to Steam",
+                                "Nothing to sync yet. Add artwork to the canvas first.")
+            return
+
+        self.state.composed_image = final
+        path = exporter.export_image(
+            final,
+            self.state.current_template,
+            self.state.selected_game_name or "untitled"
+        )
+        self.state.export_paths[self.state.current_template] = path
+
+        # Find the MainWindow and open the Sync dialog directly
+        for widget in QApplication.topLevelWidgets():
+            if hasattr(widget, "_open_sync_dialog"):
+                widget._open_sync_dialog()
+                return
 
     # ── undo / redo ───────────────────────────────────────────────────────────
     def undo(self):

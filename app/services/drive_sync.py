@@ -1,103 +1,74 @@
 """
 Google Drive sync for Steam Grunge Editor.
-
-Syncs:
-  - exports/   → all exported artwork (cover, wide, hero, logo, icon)
-  - data/      → presets and project files (.sgeproj)
-
-Credentials:
-  - client_secret.json  → place in project root (next to requirements.txt)
-  - token.json          → auto-created after first auth, same location
+Auth is handled exclusively via SteamKustom API token.
+No client_secret.json needed.
 """
 import io
-import os
-import threading
 from pathlib import Path
 from typing import Optional, Callable
+import threading
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-_BASE_DIR          = Path(__file__).resolve().parents[2]   # project root
-CLIENT_SECRET_PATH = _BASE_DIR / "client_secret.json"
-TOKEN_PATH         = _BASE_DIR / "token.json"
+_BASE_DIR = Path(__file__).resolve().parents[2]
 
-# Sync what lives in user data dir
-from app.config import EXPORT_FOLDER, DATA_DIR, PRESETS_FOLDER
-
-EXPORT_DIR   = Path(EXPORT_FOLDER)
-DATA_DIR_P   = Path(DATA_DIR)
+try:
+    from app.config import EXPORT_FOLDER, DATA_DIR
+    EXPORT_DIR = Path(EXPORT_FOLDER)
+    DATA_DIR_P = Path(DATA_DIR)
+except Exception:
+    EXPORT_DIR = _BASE_DIR / "exports"
+    DATA_DIR_P = _BASE_DIR / "data"
 
 SCOPES          = ["https://www.googleapis.com/auth/drive.file"]
 DRIVE_ROOT_NAME = "Steam Grunge Editor"
 DRIVE_EXPORTS   = "exports"
 DRIVE_PRESETS   = "presets"
+EXPORT_EXTS     = {".png", ".jpg", ".jpeg", ".webp"}
+PRESET_EXTS     = {".sgeproj", ".json"}
 
-EXPORT_EXTS  = {".png", ".jpg", ".jpeg", ".webp"}
-PRESET_EXTS  = {".sgeproj", ".json"}
+
+# ── Auth — token only ─────────────────────────────────────────────────────────
+
+def _get_steamkustom_token() -> Optional[str]:
+    from app.services.steamkustom_auth import get_token
+    return get_token()
 
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
+def _fetch_drive_token() -> Optional[str]:
+    from app.services.steamkustom_auth import get_drive_token
+    return get_drive_token()
+
 
 def is_configured() -> bool:
-    return CLIENT_SECRET_PATH.exists()
+    return bool(_get_steamkustom_token())
 
 
 def is_authenticated() -> bool:
-    if not TOKEN_PATH.exists():
-        return False
-    try:
-        from google.oauth2.credentials import Credentials
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-        return creds and (creds.valid or bool(creds.refresh_token))
-    except Exception:
-        return False
+    return bool(_fetch_drive_token())
 
 
-def authenticate(on_done: Callable[[bool, str], None] = None):
-    """Open browser for OAuth. Calls on_done(success, message) when finished."""
-    def _run():
-        try:
-            creds = _load_or_refresh()
-            msg   = "Connected to Google Drive" if creds else "Authentication failed"
-            if on_done:
-                on_done(bool(creds), msg)
-        except Exception as e:
-            if on_done:
-                on_done(False, str(e))
-    threading.Thread(target=_run, daemon=True).start()
-
-
-def disconnect():
-    if TOKEN_PATH.exists():
-        TOKEN_PATH.unlink()
-
-
-def _load_or_refresh():
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-    from google_auth_oauthlib.flow import InstalledAppFlow
-
-    creds = None
-    if TOKEN_PATH.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow  = InstalledAppFlow.from_client_secrets_file(
-                str(CLIENT_SECRET_PATH), SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_PATH, "w") as f:
-            f.write(creds.to_json())
-    return creds
-
-
-def _service():
-    from googleapiclient.discovery import build
-    return build("drive", "v3", credentials=_load_or_refresh())
+def get_status() -> dict:
+    token = _get_steamkustom_token()
+    return {
+        "configured":    bool(token),
+        "authenticated": bool(_fetch_drive_token()) if token else False,
+        "mode":          "api" if token else "none",
+    }
 
 
 # ── Drive helpers ─────────────────────────────────────────────────────────────
+
+def _service():
+    access_token = _fetch_drive_token()
+    if not access_token:
+        raise RuntimeError(
+            "No SteamKustom token found. "
+            "Go to Edit → Preferences and paste your token from steamkustom.com"
+        )
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    creds = Credentials(token=access_token)
+    return build("drive", "v3", credentials=creds)
+
 
 def _get_or_create_folder(svc, name: str, parent_id: str = None) -> str:
     q = (f"name='{name}' and mimeType='application/vnd.google-apps.folder'"
@@ -122,34 +93,54 @@ def _find_file(svc, name: str, parent_id: str) -> Optional[str]:
 
 def _mime(path: Path) -> str:
     return {
-        ".png":     "image/png",
-        ".jpg":     "image/jpeg",
-        ".jpeg":    "image/jpeg",
-        ".webp":    "image/webp",
-        ".sgeproj": "application/json",
-        ".json":    "application/json",
+        ".png": "image/png", ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg", ".webp": "image/webp",
+        ".sgeproj": "application/json", ".json": "application/json",
     }.get(path.suffix.lower(), "application/octet-stream")
 
 
-def _upload_file(svc, path: Path, parent_id: str):
+def _file_md5(path: Path) -> str:
+    import hashlib
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _upload_file(svc, path: Path, parent_id: str) -> str:
+    """Upload file. Returns 'uploaded', 'updated', or 'skipped'."""
     from googleapiclient.http import MediaFileUpload
-    media    = MediaFileUpload(str(path), mimetype=_mime(path), resumable=False)
-    existing = _find_file(svc, path.name, parent_id)
-    if existing:
-        svc.files().update(fileId=existing, media_body=media).execute()
+
+    # Check if file exists on Drive
+    q = (f"name='{path.name}' and '{parent_id}' in parents and trashed=false"
+         f" and mimeType!='application/vnd.google-apps.folder'")
+    files = svc.files().list(q=q, fields="files(id, md5Checksum)").execute().get("files", [])
+
+    local_md5 = _file_md5(path)
+
+    if files:
+        drive_md5 = files[0].get("md5Checksum", "")
+        if drive_md5 == local_md5:
+            return "skipped"  # Identical file already on Drive
+        # Different content — update
+        media = MediaFileUpload(str(path), mimetype=_mime(path), resumable=False)
+        svc.files().update(fileId=files[0]["id"], media_body=media).execute()
+        return "updated"
     else:
+        media = MediaFileUpload(str(path), mimetype=_mime(path), resumable=False)
         svc.files().create(
             body={"name": path.name, "parents": [parent_id]},
             media_body=media, fields="id",
         ).execute()
+        return "uploaded"
 
 
 def _download_file(svc, file_id: str, dest: Path):
     from googleapiclient.http import MediaIoBaseDownload
-    request = svc.files().get_media(fileId=file_id)
-    buf     = io.BytesIO()
-    dl      = MediaIoBaseDownload(buf, request)
-    done    = False
+    buf  = io.BytesIO()
+    dl   = MediaIoBaseDownload(buf, svc.files().get_media(fileId=file_id))
+    done = False
     while not done:
         _, done = dl.next_chunk()
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -160,10 +151,6 @@ def _download_file(svc, file_id: str, dest: Path):
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def upload_all(on_progress: Callable[[str], None] = None) -> dict:
-    """
-    Upload all exports and presets to Drive.
-    Returns {"uploaded": n, "errors": [...]}.
-    """
     uploaded, errors = 0, []
     try:
         svc      = _service()
@@ -171,72 +158,60 @@ def upload_all(on_progress: Callable[[str], None] = None) -> dict:
         exp_id   = _get_or_create_folder(svc, DRIVE_EXPORTS, root_id)
         pre_id   = _get_or_create_folder(svc, DRIVE_PRESETS,  root_id)
 
-        # Exports — walk all subfolders (cover/, wide/, hero/, etc.)
-        if EXPORT_DIR.exists():
-            for f in sorted(EXPORT_DIR.rglob("*")):
-                if f.is_file() and f.suffix.lower() in EXPORT_EXTS:
-                    try:
+        for folder, parent_id, exts in [
+            (EXPORT_DIR, exp_id, EXPORT_EXTS),
+            (DATA_DIR_P, pre_id, PRESET_EXTS),
+        ]:
+            if not folder.exists():
+                continue
+            for f in sorted(folder.rglob("*")):
+                if not f.is_file() or f.suffix.lower() not in exts:
+                    continue
+                try:
+                    result = _upload_file(svc, f, parent_id)
+                    if result == "skipped":
                         if on_progress:
-                            on_progress(f"Uploading {f.name}…")
-                        _upload_file(svc, f, exp_id)
-                        uploaded += 1
-                    except Exception as e:
-                        errors.append(f"{f.name}: {e}")
-
-        # Presets / project files
-        if DATA_DIR_P.exists():
-            for f in sorted(DATA_DIR_P.rglob("*")):
-                if f.is_file() and f.suffix.lower() in PRESET_EXTS:
-                    try:
+                            on_progress(f"Skipped {f.name} (unchanged)")
+                    else:
                         if on_progress:
-                            on_progress(f"Uploading {f.name}…")
-                        _upload_file(svc, f, pre_id)
+                            on_progress(f"{'Updating' if result == 'updated' else 'Uploading'} {f.name}…")
                         uploaded += 1
-                    except Exception as e:
-                        errors.append(f"{f.name}: {e}")
+                except Exception as e:
+                    errors.append(f"{f.name}: {e}")
 
     except Exception as e:
-        errors.append(f"Error: {e}")
+        errors.append(str(e))
 
     return {"uploaded": uploaded, "errors": errors}
 
 
 def download_all(on_progress: Callable[[str], None] = None) -> dict:
-    """
-    Download exports and presets from Drive to local folders.
-    Skips files that already exist locally.
-    """
     downloaded, errors = 0, []
     try:
         svc = _service()
-
-        q       = (f"name='{DRIVE_ROOT_NAME}' and "
-                   f"mimeType='application/vnd.google-apps.folder' and trashed=false")
+        q   = (f"name='{DRIVE_ROOT_NAME}' and "
+               f"mimeType='application/vnd.google-apps.folder' and trashed=false")
         folders = svc.files().list(q=q, fields="files(id)").execute().get("files", [])
         if not folders:
             return {"downloaded": 0, "errors": ["No Drive folder found. Upload first."]}
 
         root_id = folders[0]["id"]
-
-        for subfolder_name, local_dir, allowed_exts in [
-            (DRIVE_EXPORTS, EXPORT_DIR,   EXPORT_EXTS),
-            (DRIVE_PRESETS, DATA_DIR_P,   PRESET_EXTS),
+        for sub_name, local_dir, allowed_exts in [
+            (DRIVE_EXPORTS, EXPORT_DIR, EXPORT_EXTS),
+            (DRIVE_PRESETS, DATA_DIR_P, PRESET_EXTS),
         ]:
-            q2 = (f"name='{subfolder_name}' and '{root_id}' in parents and "
+            q2 = (f"name='{sub_name}' and '{root_id}' in parents and "
                   f"mimeType='application/vnd.google-apps.folder' and trashed=false")
             r2 = svc.files().list(q=q2, fields="files(id)").execute()
             if not r2.get("files"):
                 continue
-
             sub_id = r2["files"][0]["id"]
             files  = svc.files().list(
                 q=f"'{sub_id}' in parents and trashed=false",
                 fields="files(id, name)",
             ).execute().get("files", [])
-
             for file in files:
-                ext  = Path(file["name"]).suffix.lower()
-                if ext not in allowed_exts:
+                if Path(file["name"]).suffix.lower() not in allowed_exts:
                     continue
                 dest = local_dir / file["name"]
                 if dest.exists():
@@ -250,13 +225,6 @@ def download_all(on_progress: Callable[[str], None] = None) -> dict:
                     errors.append(f"{file['name']}: {e}")
 
     except Exception as e:
-        errors.append(f"Error: {e}")
+        errors.append(str(e))
 
     return {"downloaded": downloaded, "errors": errors}
-
-
-def get_status() -> dict:
-    return {
-        "configured":    is_configured(),
-        "authenticated": is_authenticated(),
-    }

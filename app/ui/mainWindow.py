@@ -351,7 +351,7 @@ class MainWindow(QMainWindow):
         # ═══════════════════════════════════════════════════════════════════
         cloud_menu = menubar.addMenu("Cloud Sync")
 
-        drive_connect_act = QAction("Connect Google Account…", self)
+        drive_connect_act = QAction("Connect via SteamKustom…", self)
         drive_connect_act.triggered.connect(self._open_drive_connect)
         cloud_menu.addAction(drive_connect_act)
 
@@ -915,17 +915,8 @@ class MainWindow(QMainWindow):
     # ── Cloud Sync handlers ───────────────────────────────────────────────────
 
     def _open_drive_connect(self):
-        """Cloud Sync → Connect Google Account — opens auth in browser."""
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel
-        from app.ui.drive_sync_panel import DriveSyncPanel
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Google Drive Sync")
-        dlg.setMinimumWidth(460)
-        dlg.setStyleSheet("QDialog { background: #080a0e; }")
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(DriveSyncPanel())
-        dlg.exec()
+        """Cloud Sync → Connect — opens SteamKustom token dialog."""
+        self._open_preferences()
 
     def _drive_upload_now(self):
         """Cloud Sync → Upload to Drive."""
@@ -934,7 +925,7 @@ class MainWindow(QMainWindow):
         def _work():
             from app.services.drive_sync import upload_all, is_configured, is_authenticated
             if not is_configured() or not is_authenticated():
-                self._status_label.setText("[Drive] Not connected — use Cloud Sync → Connect Google Account")
+                self._status_label.setText("[Drive] Not connected — add token in Edit → Preferences")
                 return
             r = upload_all(on_progress=lambda m: self._status_label.setText(f"[Drive] {m}"))
             n = r["uploaded"]
@@ -948,7 +939,7 @@ class MainWindow(QMainWindow):
         def _work():
             from app.services.drive_sync import download_all, is_configured, is_authenticated
             if not is_configured() or not is_authenticated():
-                self._status_label.setText("[Drive] Not connected — use Cloud Sync → Connect Google Account")
+                self._status_label.setText("[Drive] Not connected — add token in Edit → Preferences")
                 return
             r = download_all(on_progress=lambda m: self._status_label.setText(f"[Drive] {m}"))
             n = r["downloaded"]
@@ -1223,10 +1214,74 @@ class MainWindow(QMainWindow):
 
         root.addWidget(_hline())
 
-        # ── GOOGLE DRIVE SYNC ──────────────────────────────────────────────
-        from app.ui.drive_sync_panel import DriveSyncPanel
-        sync_panel = DriveSyncPanel()
-        root.addWidget(sync_panel)
+        # ── STEAMKUSTOM ACCOUNT ────────────────────────────────────────────
+        root.addWidget(_section("STEAMKUSTOM ACCOUNT"))
+
+        sk_desc = QLabel(
+            "Generate a token at steamkustom.com → Settings → Apps.\n"
+            "Paste it here to enable Google Drive sync automatically."
+        )
+        sk_desc.setStyleSheet("color:#607080; font-size:11px; line-height:1.5;")
+        sk_desc.setWordWrap(True)
+        root.addWidget(sk_desc)
+
+        # Status label
+        sk_status = QLabel("")
+        sk_status.setStyleSheet("font-size:11px; color:#404a5a;")
+        root.addWidget(sk_status)
+
+        # Token row
+        from app.services.steamkustom_auth import get_token, save_token, verify_async
+        sk_row = QHBoxLayout()
+        sk_token_edit = QLineEdit()
+        sk_token_edit.setPlaceholderText("Paste your app token from steamkustom.com…")
+        sk_token_edit.setEchoMode(QLineEdit.Password)
+        saved = get_token() or ""
+        if saved:
+            sk_token_edit.setText(saved)
+            sk_status.setText("● Token saved")
+            sk_status.setStyleSheet("font-size:11px; color:#4ade80;")
+        sk_row.addWidget(sk_token_edit, 1)
+
+        sk_verify_btn = QPushButton("Verify")
+        sk_verify_btn.setFixedWidth(80)
+        sk_row.addWidget(sk_verify_btn)
+        root.addLayout(sk_row)
+
+        def _verify_token():
+            token = sk_token_edit.text().strip()
+            if not token:
+                sk_status.setText("Enter a token first")
+                sk_status.setStyleSheet("font-size:11px; color:#fbbf24;")
+                return
+            sk_verify_btn.setEnabled(False)
+            sk_status.setText("Verifying…")
+            sk_status.setStyleSheet("font-size:11px; color:#60a5fa;")
+
+            def _done(ok, user):
+                from PySide6.QtCore import QTimer
+                def _upd():
+                    sk_verify_btn.setEnabled(True)
+                    if ok and user:
+                        save_token(token)
+                        prefs["steamkustom_token"] = token
+                        _save_prefs()
+                        username = user.get("username", "Connected")
+                        sk_status.setText(f"✓ Connected as {username}")
+                        sk_status.setStyleSheet("font-size:11px; color:#4ade80;")
+                    else:
+                        sk_status.setText("✗ Invalid token — generate one at steamkustom.com")
+                        sk_status.setStyleSheet("font-size:11px; color:#f87171;")
+                QTimer.singleShot(0, _upd)
+
+            verify_async(token, _done)
+
+        sk_verify_btn.clicked.connect(_verify_token)
+
+        sk_link = QLabel('<a href="https://steamkustom.com/settings" style="color:#60a5fa;">steamkustom.com → Settings → Apps → Generate Token</a>')
+        sk_link.setOpenExternalLinks(True)
+        sk_link.setStyleSheet("font-size:10px;")
+        root.addWidget(sk_link)
 
         root.addWidget(_hline())
 

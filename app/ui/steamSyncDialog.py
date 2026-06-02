@@ -223,33 +223,42 @@ class SteamSyncDialog(QDialog):
 
         root.addWidget(_hline())
 
-        # ── GOOGLE DRIVE ──────────────────────────────────────────────────────
+        # ── CLOUD BACKUP (SteamKustom token) ─────────────────────────────────
         drive_sec = QLabel("CLOUD BACKUP")
         drive_sec.setObjectName("section")
         root.addWidget(drive_sec)
 
-        drive_row = QHBoxLayout()
-
-        # Status indicator
+        # Status row
         self._drive_status_lbl = QLabel()
         self._drive_status_lbl.setStyleSheet("font-size:11px; color:#555;")
-        drive_row.addWidget(self._drive_status_lbl, 1)
+        root.addWidget(self._drive_status_lbl)
 
-        # Connect / Upload buttons
-        self._drive_connect_btn = QPushButton("Connect Google Account")
+        # Token row
+        token_row = QHBoxLayout()
+        from app.services.steamkustom_auth import get_token
+        saved_token = get_token() or ""
+        self._drive_token_edit = QLineEdit()
+        self._drive_token_edit.setPlaceholderText(
+            "Paste token from steamkustom.com → Settings → Apps…")
+        self._drive_token_edit.setEchoMode(QLineEdit.Password)
+        if saved_token:
+            self._drive_token_edit.setText(saved_token)
+        token_row.addWidget(self._drive_token_edit, 1)
+
+        self._drive_connect_btn = QPushButton("Connect")
         self._drive_connect_btn.setStyleSheet(
-            "background:#0a2040; border:1px solid #1a4080; color:#60a5fa; "
-            "font-size:12px; padding:5px 12px; border-radius:2px;"
+            "background:#0a2040; border:1px solid #1a4060; color:#60a5fa; "
+            "font-size:12px; padding:5px 14px; border-radius:2px;"
         )
         self._drive_connect_btn.clicked.connect(self._drive_connect)
-        drive_row.addWidget(self._drive_connect_btn)
+        token_row.addWidget(self._drive_connect_btn)
 
-        self._drive_upload_btn = QPushButton("⬆ Upload to Drive")
-        self._drive_upload_btn.setEnabled(False)
+        self._drive_upload_btn = QPushButton("⬆ Upload")
+        self._drive_upload_btn.setEnabled(bool(saved_token))
         self._drive_upload_btn.clicked.connect(self._drive_upload)
-        drive_row.addWidget(self._drive_upload_btn)
+        token_row.addWidget(self._drive_upload_btn)
 
-        root.addLayout(drive_row)
+        root.addLayout(token_row)
         self._refresh_drive_status()
 
         root.addWidget(_hline())
@@ -391,74 +400,55 @@ class SteamSyncDialog(QDialog):
 
     # ── Sync ─────────────────────────────────────────────────────────────────
 
-    # ── Google Drive helpers ──────────────────────────────────────────────────
+    # ── Cloud Backup helpers (SteamKustom token) ─────────────────────────────
 
     def _refresh_drive_status(self):
-        try:
-            from app.services.drive_sync import get_status
-            s = get_status()
-            if not s["configured"]:
-                self._drive_status_lbl.setText("client_secret.json not found in project root")
-                self._drive_status_lbl.setStyleSheet("font-size:11px; color:#ccaa44;")
-                self._drive_connect_btn.setEnabled(False)
-                self._drive_upload_btn.setEnabled(False)
-            elif s["authenticated"]:
-                self._drive_status_lbl.setText("✓ Connected to Google Drive")
-                self._drive_status_lbl.setStyleSheet("font-size:11px; color:#4ade80;")
-                self._drive_connect_btn.setText("Disconnect")
-                self._drive_connect_btn.setStyleSheet(
-                    "background:transparent; border:1px solid #4a1515; color:#f87171; "
-                    "font-size:12px; padding:5px 12px; border-radius:2px;"
-                )
-                try:
-                    self._drive_connect_btn.clicked.disconnect()
-                except RuntimeError:
-                    pass
-                self._drive_connect_btn.clicked.connect(self._drive_disconnect)
-                self._drive_connect_btn.setEnabled(True)
-                self._drive_upload_btn.setEnabled(True)
-            else:
-                self._drive_status_lbl.setText("Not connected")
-                self._drive_status_lbl.setStyleSheet("font-size:11px; color:#555;")
-                self._drive_connect_btn.setText("Connect Google Account")
-                self._drive_connect_btn.setStyleSheet(
-                    "background:#0a2040; border:1px solid #1a4080; color:#60a5fa; "
-                    "font-size:12px; padding:5px 12px; border-radius:2px;"
-                )
-                try:
-                    self._drive_connect_btn.clicked.disconnect()
-                except RuntimeError:
-                    pass
-                self._drive_connect_btn.clicked.connect(self._drive_connect)
-                self._drive_connect_btn.setEnabled(True)
-                self._drive_upload_btn.setEnabled(False)
-        except ImportError:
-            self._drive_status_lbl.setText("Drive sync not available")
+        from app.services.steamkustom_auth import get_token, is_connected
+        token = get_token()
+        if token:
+            self._drive_status_lbl.setText("✓ Token saved — uploads use SteamKustom Drive sync")
+            self._drive_status_lbl.setStyleSheet("font-size:11px; color:#4ade80;")
+            self._drive_connect_btn.setText("Update Token")
+            self._drive_upload_btn.setEnabled(True)
+        else:
+            self._drive_status_lbl.setText("Paste your token to enable Drive backup")
+            self._drive_status_lbl.setStyleSheet("font-size:11px; color:#555;")
+            self._drive_connect_btn.setText("Connect")
+            self._drive_upload_btn.setEnabled(False)
 
     def _drive_connect(self):
-        from app.services.drive_sync import is_configured, authenticate
-        if not is_configured():
-            self._drive_status_lbl.setText("Place client_secret.json in project root first")
+        """Save the pasted token and verify it."""
+        token = self._drive_token_edit.text().strip()
+        if not token:
+            self._drive_status_lbl.setText("Paste a token first")
             self._drive_status_lbl.setStyleSheet("font-size:11px; color:#fbbf24;")
             return
         self._drive_connect_btn.setEnabled(False)
-        self._drive_status_lbl.setText("Opening browser…")
+        self._drive_status_lbl.setText("Verifying…")
         self._drive_status_lbl.setStyleSheet("font-size:11px; color:#60a5fa;")
 
-        def _done(ok, msg):
+        def _done(ok, user):
             from PySide6.QtCore import QTimer
-            QTimer.singleShot(0, self._refresh_drive_status)
+            def _update():
+                self._drive_connect_btn.setEnabled(True)
+                if ok and user:
+                    from app.services.steamkustom_auth import save_token
+                    save_token(token)
+                    name = user.get("username", "Connected")
+                    self._drive_status_lbl.setText(f"✓ Connected as {name}")
+                    self._drive_status_lbl.setStyleSheet("font-size:11px; color:#4ade80;")
+                    self._drive_upload_btn.setEnabled(True)
+                else:
+                    self._drive_status_lbl.setText("✗ Invalid token — get one at steamkustom.com/settings")
+                    self._drive_status_lbl.setStyleSheet("font-size:11px; color:#f87171;")
+            QTimer.singleShot(0, _update)
 
-        authenticate(on_done=_done)
-
-    def _drive_disconnect(self):
-        from app.services.drive_sync import disconnect
-        disconnect()
-        self._refresh_drive_status()
+        from app.services.steamkustom_auth import verify_async
+        verify_async(token, _done)
 
     def _drive_upload(self):
         self._drive_upload_btn.setEnabled(False)
-        self._drive_status_lbl.setText("Uploading…")
+        self._drive_status_lbl.setText("Uploading (skipping duplicates)…")
         self._drive_status_lbl.setStyleSheet("font-size:11px; color:#60a5fa;")
 
         import threading
@@ -466,10 +456,16 @@ class SteamSyncDialog(QDialog):
             from app.services.drive_sync import upload_all
             from PySide6.QtCore import QTimer
             r = upload_all()
-            n = r["uploaded"]
-            errs = r["errors"]
-            msg   = f"✓ {n} files uploaded" if not errs else f"Error: {errs[0]}"
-            color = "#4ade80" if not errs else "#f87171"
+            n    = r.get("uploaded", 0)
+            skip = r.get("skipped", 0)
+            errs = r.get("errors", [])
+            if errs:
+                msg, color = f"Error: {errs[0]}", "#f87171"
+            else:
+                parts = [f"✓ {n} uploaded"]
+                if skip:
+                    parts.append(f"{skip} skipped (no change)")
+                msg, color = " · ".join(parts), "#4ade80"
             def _update():
                 self._drive_status_lbl.setText(msg)
                 self._drive_status_lbl.setStyleSheet(f"font-size:11px; color:{color};")
