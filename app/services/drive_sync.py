@@ -1,6 +1,6 @@
 """
 Google Drive sync for Steam Grunge Editor.
-Auth is handled exclusively via SteamKustom API token.
+Auth is handled exclusively via PimpMySteam API token.
 No client_secret.json needed.
 """
 import io
@@ -28,18 +28,18 @@ PRESET_EXTS     = {".sgeproj", ".json"}
 
 # ── Auth — token only ─────────────────────────────────────────────────────────
 
-def _get_steamkustom_token() -> Optional[str]:
-    from app.services.steamkustom_auth import get_token
+def _get_pimpmysteam_token() -> Optional[str]:
+    from app.services.pimpmysteam_auth import get_token
     return get_token()
 
 
 def _fetch_drive_token() -> Optional[str]:
-    from app.services.steamkustom_auth import get_drive_token
+    from app.services.pimpmysteam_auth import get_drive_token
     return get_drive_token()
 
 
 def is_configured() -> bool:
-    return bool(_get_steamkustom_token())
+    return bool(_get_pimpmysteam_token())
 
 
 def is_authenticated() -> bool:
@@ -47,7 +47,7 @@ def is_authenticated() -> bool:
 
 
 def get_status() -> dict:
-    token = _get_steamkustom_token()
+    token = _get_pimpmysteam_token()
     return {
         "configured":    bool(token),
         "authenticated": bool(_fetch_drive_token()) if token else False,
@@ -61,8 +61,8 @@ def _service():
     access_token = _fetch_drive_token()
     if not access_token:
         raise RuntimeError(
-            "No SteamKustom token found. "
-            "Go to Edit → Preferences and paste your token from steamkustom.com"
+            "No PimpMySteam token found. "
+            "Go to Edit → Preferences and paste your token from pimpmysteam.com"
         )
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build

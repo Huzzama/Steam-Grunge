@@ -1,24 +1,22 @@
 """
-SteamKustom authentication for Steam Grunge Editor.
-
-User generates a token at steamkustom.com → Settings → Apps.
-No Google OAuth or Steam login needed locally.
+PimpMySteam authentication for Steam Grunge Editor.
+Token generated at pimpmysteam.com → Settings → Apps.
 """
 import json
 import threading
 from pathlib import Path
 from typing import Optional, Callable
 
-_BASE_DIR = Path(__file__).resolve().parents[2]
+_BASE_DIR   = Path(__file__).resolve().parents[2]
 _PREFS_PATH = _BASE_DIR / "app" / "data" / "preferences.json"
-API_URL = "https://steamkustom-production.up.railway.app"
+API_URL     = "https://steamkustom-production.up.railway.app"
 
 
 def get_token() -> Optional[str]:
     try:
         if _PREFS_PATH.exists():
             with open(_PREFS_PATH, encoding="utf-8") as f:
-                return json.load(f).get("steamkustom_token", "")
+                return json.load(f).get("pimpmysteam_token") or None
     except Exception:
         pass
     return None
@@ -31,30 +29,35 @@ def save_token(token: str) -> bool:
         if _PREFS_PATH.exists():
             with open(_PREFS_PATH, encoding="utf-8") as f:
                 data = json.load(f)
-        data["steamkustom_token"] = token
+        data["pimpmysteam_token"] = token
         with open(_PREFS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"[PimpMySteam] save_token error: {e}")
         return False
 
 
 def verify_token(token: str) -> Optional[dict]:
-    """Verify token against API. Returns user dict or None."""
-    import requests
+    """Verify token. Returns user dict or None."""
     try:
-        resp = requests.get(
+        import urllib.request, urllib.error, ssl
+        req = urllib.request.Request(
             f"{API_URL}/auth/me",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=8,
         )
-        if resp.status_code == 200:
-            return resp.json()
-        print(f"[SteamKustom] Token verify failed: HTTP {resp.status_code}")
-    except requests.exceptions.ConnectionError:
-        print(f"[SteamKustom] Cannot reach {API_URL} — check internet connection")
+        # Create SSL context that works on macOS
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            if resp.status == 200:
+                import json as _json
+                return _json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        print(f"[PimpMySteam] HTTP {e.code}: {e.reason}")
+    except urllib.error.URLError as e:
+        print(f"[PimpMySteam] URL error: {e.reason}")
     except Exception as e:
-        print(f"[SteamKustom] Token verify error: {e}")
+        print(f"[PimpMySteam] verify_token error: {e}")
     return None
 
 
@@ -66,36 +69,40 @@ def get_user() -> Optional[dict]:
 
 
 def get_drive_token() -> Optional[str]:
-    """Get Google Drive access token via SteamKustom API."""
-    import requests
+    """Get Google Drive access token via PimpMySteam API."""
     token = get_token()
     if not token:
         return None
     try:
-        resp = requests.get(
+        import urllib.request, ssl
+        req = urllib.request.Request(
             f"{API_URL}/google/drive-token",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=8,
         )
-        if resp.status_code == 200:
-            return resp.json().get("access_token")
-    except Exception:
-        pass
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            if resp.status == 200:
+                import json as _json
+                return _json.loads(resp.read().decode()).get("access_token")
+    except Exception as e:
+        print(f"[PimpMySteam] get_drive_token error: {e}")
     return None
 
 
-def verify_async(token: str,
-                 on_done: Callable[[bool, Optional[dict]], None]):
-    """Verify token in background thread. Always calls on_done."""
+def verify_async(token: str, on_done: Callable[[bool, Optional[dict]], None]):
+    """Verify token in background. Always calls on_done."""
     def _run():
         try:
             user = verify_token(token)
             on_done(bool(user), user)
         except Exception as e:
-            print(f"[SteamKustom] verify_async error: {e}")
+            print(f"[PimpMySteam] verify_async unhandled: {e}")
             on_done(False, None)
     threading.Thread(target=_run, daemon=True).start()
 
 
 def is_connected() -> bool:
-    return bool(get_token()) and bool(get_user())
+    token = get_token()
+    if not token:
+        return False
+    return bool(verify_token(token))

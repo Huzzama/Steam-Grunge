@@ -1,5 +1,5 @@
 """
-SteamKustom Drive Sync panel for Steam Grunge Editor — PySide6.
+PimpMySteam Drive Sync panel for Steam Grunge Editor — PySide6.
 Token-only auth: no client_secret.json needed.
 """
 import threading
@@ -98,7 +98,7 @@ class DriveSyncPanel(QWidget):
 
         root.addWidget(_lbl(
             "Back up exports and projects to your personal Google Drive.\n"
-            "Requires a SteamKustom account token.",
+            "Requires a PimpMySteam account token.",
             wrap=True,
         ))
 
@@ -111,7 +111,7 @@ class DriveSyncPanel(QWidget):
         token_row.setSpacing(8)
 
         self._token_edit = QLineEdit()
-        self._token_edit.setPlaceholderText("Paste token from steamkustom.com → Settings → Apps…")
+        self._token_edit.setPlaceholderText("Paste token from pimpmysteam.com → Settings → Apps…")
         self._token_edit.setEchoMode(QLineEdit.Password)
         self._token_edit.setStyleSheet(
             f"background:#0a0a0a; border:1px solid #2a2a2a; color:{_TEXT}; "
@@ -119,7 +119,7 @@ class DriveSyncPanel(QWidget):
 
         # Pre-fill saved token
         try:
-            from app.services.steamkustom_auth import get_token
+            from app.services.pimpmysteam_auth import get_token
             saved = get_token() or ""
             if saved:
                 self._token_edit.setText(saved)
@@ -136,8 +136,8 @@ class DriveSyncPanel(QWidget):
 
         # Get token link
         link = QLabel(
-            f'<a href="https://steamkustom.com/settings" '
-            f'style="color:{_BLUE};">Get token at steamkustom.com →</a>'
+            f'<a href="https://pimpmysteam.com/settings" '
+            f'style="color:{_BLUE};">Get token at pimpmysteam.com →</a>'
         )
         link.setOpenExternalLinks(True)
         link.setStyleSheet(f"font-size:10px; font-family:{_MONO};")
@@ -173,7 +173,7 @@ class DriveSyncPanel(QWidget):
 
     def _refresh(self):
         try:
-            from app.services.steamkustom_auth import get_token, is_connected
+            from app.services.pimpmysteam_auth import get_token, is_connected
             token = get_token()
             if not token:
                 self._set_status("No token — paste one above and click Connect.", _DIM)
@@ -193,7 +193,7 @@ class DriveSyncPanel(QWidget):
                 else:
                     self._set_status(
                         "Token saved but Google Drive not linked.\n"
-                        "Connect Google Drive at steamkustom.com → Settings → Connections.",
+                        "Connect Google Drive at pimpmysteam.com → Settings → Connections.",
                         _GOLD)
                     self._dot.setStyleSheet(f"color:{_GOLD}; font-size:11px;")
                     self._upload_btn.setEnabled(False)
@@ -226,13 +226,13 @@ class DriveSyncPanel(QWidget):
             self._sig.done.emit(
                 ok,
                 f"✓ Connected as {user.get('username','')}" if ok
-                else "✗ Invalid token — get one at steamkustom.com/settings"
+                else "✗ Invalid token — get one at pimpmysteam.com/settings"
             )
             if ok:
-                from app.services.steamkustom_auth import save_token
+                from app.services.pimpmysteam_auth import save_token
                 save_token(token)
 
-        from app.services.steamkustom_auth import verify_async
+        from app.services.pimpmysteam_auth import verify_async
         verify_async(token, _done)
 
     def _upload(self):

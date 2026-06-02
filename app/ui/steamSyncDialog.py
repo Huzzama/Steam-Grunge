@@ -223,7 +223,7 @@ class SteamSyncDialog(QDialog):
 
         root.addWidget(_hline())
 
-        # ── CLOUD BACKUP (SteamKustom token) ─────────────────────────────────
+        # ── CLOUD BACKUP (PimpMySteam token) ─────────────────────────────────
         drive_sec = QLabel("CLOUD BACKUP")
         drive_sec.setObjectName("section")
         root.addWidget(drive_sec)
@@ -235,11 +235,11 @@ class SteamSyncDialog(QDialog):
 
         # Token row
         token_row = QHBoxLayout()
-        from app.services.steamkustom_auth import get_token
+        from app.services.pimpmysteam_auth import get_token
         saved_token = get_token() or ""
         self._drive_token_edit = QLineEdit()
         self._drive_token_edit.setPlaceholderText(
-            "Paste token from steamkustom.com → Settings → Apps…")
+            "Paste token from pimpmysteam.com → Settings → Apps…")
         self._drive_token_edit.setEchoMode(QLineEdit.Password)
         if saved_token:
             self._drive_token_edit.setText(saved_token)
@@ -400,13 +400,13 @@ class SteamSyncDialog(QDialog):
 
     # ── Sync ─────────────────────────────────────────────────────────────────
 
-    # ── Cloud Backup helpers (SteamKustom token) ─────────────────────────────
+    # ── Cloud Backup helpers (PimpMySteam token) ─────────────────────────────
 
     def _refresh_drive_status(self):
-        from app.services.steamkustom_auth import get_token, is_connected
+        from app.services.pimpmysteam_auth import get_token, is_connected
         token = get_token()
         if token:
-            self._drive_status_lbl.setText("✓ Token saved — uploads use SteamKustom Drive sync")
+            self._drive_status_lbl.setText("✓ Token saved — uploads use PimpMySteam Drive sync")
             self._drive_status_lbl.setStyleSheet("font-size:11px; color:#4ade80;")
             self._drive_connect_btn.setText("Update Token")
             self._drive_upload_btn.setEnabled(True)
@@ -432,18 +432,18 @@ class SteamSyncDialog(QDialog):
             def _update():
                 self._drive_connect_btn.setEnabled(True)
                 if ok and user:
-                    from app.services.steamkustom_auth import save_token
+                    from app.services.pimpmysteam_auth import save_token
                     save_token(token)
                     name = user.get("username", "Connected")
                     self._drive_status_lbl.setText(f"✓ Connected as {name}")
                     self._drive_status_lbl.setStyleSheet("font-size:11px; color:#4ade80;")
                     self._drive_upload_btn.setEnabled(True)
                 else:
-                    self._drive_status_lbl.setText("✗ Invalid token — get one at steamkustom.com/settings")
+                    self._drive_status_lbl.setText("✗ Invalid token — get one at pimpmysteam.com/settings")
                     self._drive_status_lbl.setStyleSheet("font-size:11px; color:#f87171;")
             QTimer.singleShot(0, _update)
 
-        from app.services.steamkustom_auth import verify_async
+        from app.services.pimpmysteam_auth import verify_async
         verify_async(token, _done)
 
     def _drive_upload(self):

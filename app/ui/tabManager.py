@@ -63,7 +63,9 @@ class WorkspaceTab(QWidget):
         self.editor_panel = EditorPanel()
         self.editor_panel.settings_changed.connect(self.schedule_compose)
         self.editor_panel.template_changed.connect(self._on_template_changed)
-        self.editor_panel.sync_requested.connect(self._on_sync_requested)
+        # Connect sync button if signal exists (safe for older EditorPanel versions)
+        if hasattr(self.editor_panel, 'sync_requested'):
+            self.editor_panel.sync_requested.connect(self._on_sync_requested)
         self.editor_panel.setMinimumWidth(340)
         self.editor_panel.setMaximumWidth(480)
         self.editor_panel.setContentsMargins(0, 0, 8, 0)

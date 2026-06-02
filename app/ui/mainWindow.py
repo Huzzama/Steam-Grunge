@@ -351,7 +351,7 @@ class MainWindow(QMainWindow):
         # ═══════════════════════════════════════════════════════════════════
         cloud_menu = menubar.addMenu("Cloud Sync")
 
-        drive_connect_act = QAction("Connect via SteamKustom…", self)
+        drive_connect_act = QAction("Connect via PimpMySteam…", self)
         drive_connect_act.triggered.connect(self._open_drive_connect)
         cloud_menu.addAction(drive_connect_act)
 
@@ -915,8 +915,103 @@ class MainWindow(QMainWindow):
     # ── Cloud Sync handlers ───────────────────────────────────────────────────
 
     def _open_drive_connect(self):
-        """Cloud Sync → Connect — opens SteamKustom token dialog."""
-        self._open_preferences()
+        """Cloud Sync → Connect via PimpMySteam — shows inline token dialog."""
+        from PySide6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
+        )
+        from PySide6.QtCore import QTimer
+        from app.services.pimpmysteam_auth import get_token, save_token, verify_async
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Connect via PimpMySteam")
+        dlg.setMinimumWidth(480)
+        dlg.setStyleSheet(
+            "QDialog{background:#060c14;color:#c8d8e8;font-family:'Courier New';font-size:13px;}"
+            "QLabel{color:#80a0b0;} QLineEdit{background:#040810;border:1px solid #0d2030;"
+            "color:#c8d8e8;padding:6px 10px;font-family:'Courier New';font-size:13px;}"
+            "QPushButton{background:#060c14;border:1px solid #0d2030;color:#607888;"
+            "padding:6px 16px;font-family:'Courier New';font-size:12px;}"
+            "QPushButton:hover{border-color:#38bdf8;color:#38bdf8;}"
+        )
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(20, 20, 20, 20)
+        lay.setSpacing(12)
+
+        title = QLabel("PIMPMYSTEAM ACCOUNT")
+        title.setStyleSheet("color:#38bdf8;font-size:12px;letter-spacing:3px;font-weight:bold;")
+        lay.addWidget(title)
+
+        desc = QLabel(
+            "Generate a token at pimpmysteam.com\n"
+            "Settings > Apps > Generate Token\n"
+            "Paste it here to enable Google Drive sync."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color:#607888;font-size:11px;")
+        lay.addWidget(desc)
+
+        saved = get_token() or ""
+        token_edit = QLineEdit()
+        token_edit.setPlaceholderText("Paste your app token here…")
+        token_edit.setEchoMode(QLineEdit.Password)
+        if saved:
+            token_edit.setText(saved)
+        lay.addWidget(token_edit)
+
+        status_lbl = QLabel("" if not saved else "✓ Token saved")
+        status_lbl.setStyleSheet(
+            f"font-size:11px;color:{'#4ade80' if saved else '#555'};"
+        )
+        lay.addWidget(status_lbl)
+
+        link = QLabel('<a href="https://pimpmysteam.com/settings" style="color:#38bdf8;">'
+                      'pimpmysteam.com → Settings → Apps → Generate Token</a>')
+        link.setOpenExternalLinks(True)
+        link.setStyleSheet("font-size:10px;")
+        lay.addWidget(link)
+
+        btn_row = QHBoxLayout()
+        verify_btn = QPushButton("Verify & Save")
+        verify_btn.setStyleSheet(
+            "background:#04141e;border:1px solid #1a4060;color:#38bdf8;"
+            "padding:8px 20px;font-weight:bold;"
+        )
+        close_btn  = QPushButton("Close")
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        btn_row.addWidget(verify_btn)
+        lay.addLayout(btn_row)
+
+        close_btn.clicked.connect(dlg.accept)
+
+        def _verify():
+            token = token_edit.text().strip()
+            if not token:
+                status_lbl.setText("Enter a token first")
+                status_lbl.setStyleSheet("font-size:11px;color:#fbbf24;")
+                return
+            verify_btn.setEnabled(False)
+            status_lbl.setText("Verifying…")
+            status_lbl.setStyleSheet("font-size:11px;color:#38bdf8;")
+
+            def _done(ok, user):
+                def _upd():
+                    verify_btn.setEnabled(True)
+                    if ok and user:
+                        save_token(token)
+                        name = user.get("username", "Connected")
+                        status_lbl.setText(f"✓ Connected as {name}")
+                        status_lbl.setStyleSheet("font-size:11px;color:#4ade80;")
+                        self._status_label.setText(f"[Drive] ✓ PimpMySteam connected as {name}")
+                    else:
+                        status_lbl.setText("✗ Invalid token — get one at pimpmysteam.com")
+                        status_lbl.setStyleSheet("font-size:11px;color:#f87171;")
+                QTimer.singleShot(0, _upd)
+            verify_async(token, _done)
+
+        verify_btn.clicked.connect(_verify)
+        dlg.exec()
 
     def _drive_upload_now(self):
         """Cloud Sync → Upload to Drive."""
@@ -951,7 +1046,7 @@ class MainWindow(QMainWindow):
         from app.services.drive_sync import get_status
         s = get_status()
         if not s["configured"]:
-            msg = "client_secret.json not found in project root."
+            msg = "No token found. Go to Edit → Preferences to add your PimpMySteam token."
         elif s["authenticated"]:
             msg = "✓ Connected to Google Drive"
         else:
@@ -1214,11 +1309,11 @@ class MainWindow(QMainWindow):
 
         root.addWidget(_hline())
 
-        # ── STEAMKUSTOM ACCOUNT ────────────────────────────────────────────
-        root.addWidget(_section("STEAMKUSTOM ACCOUNT"))
+        # ── PIMPMYSTEAM ACCOUNT ────────────────────────────────────────────
+        root.addWidget(_section("PIMPMYSTEAM ACCOUNT"))
 
         sk_desc = QLabel(
-            "Generate a token at steamkustom.com → Settings → Apps.\n"
+            "Generate a token at pimpmysteam.com → Settings → Apps.\n"
             "Paste it here to enable Google Drive sync automatically."
         )
         sk_desc.setStyleSheet("color:#607080; font-size:11px; line-height:1.5;")
@@ -1231,10 +1326,10 @@ class MainWindow(QMainWindow):
         root.addWidget(sk_status)
 
         # Token row
-        from app.services.steamkustom_auth import get_token, save_token, verify_async
+        from app.services.pimpmysteam_auth import get_token, save_token, verify_async
         sk_row = QHBoxLayout()
         sk_token_edit = QLineEdit()
-        sk_token_edit.setPlaceholderText("Paste your app token from steamkustom.com…")
+        sk_token_edit.setPlaceholderText("Paste your app token from pimpmysteam.com…")
         sk_token_edit.setEchoMode(QLineEdit.Password)
         saved = get_token() or ""
         if saved:
@@ -1264,13 +1359,13 @@ class MainWindow(QMainWindow):
                     sk_verify_btn.setEnabled(True)
                     if ok and user:
                         save_token(token)
-                        prefs["steamkustom_token"] = token
+                        prefs["pimpmysteam_token"] = token
                         _save_prefs()
                         username = user.get("username", "Connected")
                         sk_status.setText(f"✓ Connected as {username}")
                         sk_status.setStyleSheet("font-size:11px; color:#4ade80;")
                     else:
-                        sk_status.setText("✗ Invalid token — generate one at steamkustom.com")
+                        sk_status.setText("✗ Invalid token — generate one at pimpmysteam.com")
                         sk_status.setStyleSheet("font-size:11px; color:#f87171;")
                 QTimer.singleShot(0, _upd)
 
@@ -1278,7 +1373,7 @@ class MainWindow(QMainWindow):
 
         sk_verify_btn.clicked.connect(_verify_token)
 
-        sk_link = QLabel('<a href="https://steamkustom.com/settings" style="color:#60a5fa;">steamkustom.com → Settings → Apps → Generate Token</a>')
+        sk_link = QLabel('<a href="https://pimpmysteam.com/settings" style="color:#60a5fa;">pimpmysteam.com → Settings → Apps → Generate Token</a>')
         sk_link.setOpenExternalLinks(True)
         sk_link.setStyleSheet("font-size:10px;")
         root.addWidget(sk_link)
