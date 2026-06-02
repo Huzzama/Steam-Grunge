@@ -28,18 +28,18 @@ PRESET_EXTS     = {".sgeproj", ".json"}
 
 # ── Auth — token only ─────────────────────────────────────────────────────────
 
-def _get_pimpmysteam_token() -> Optional[str]:
-    from app.services.pimpmysteam_auth import get_token
+def _get_steamkustom_token() -> Optional[str]:
+    from app.services.steamkustom_auth import get_token
     return get_token()
 
 
 def _fetch_drive_token() -> Optional[str]:
-    from app.services.pimpmysteam_auth import get_drive_token
+    from app.services.steamkustom_auth import get_drive_token
     return get_drive_token()
 
 
 def is_configured() -> bool:
-    return bool(_get_pimpmysteam_token())
+    return bool(_get_steamkustom_token())
 
 
 def is_authenticated() -> bool:
@@ -47,7 +47,7 @@ def is_authenticated() -> bool:
 
 
 def get_status() -> dict:
-    token = _get_pimpmysteam_token()
+    token = _get_steamkustom_token()
     return {
         "configured":    bool(token),
         "authenticated": bool(_fetch_drive_token()) if token else False,

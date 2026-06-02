@@ -920,7 +920,7 @@ class MainWindow(QMainWindow):
             QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
         )
         from PySide6.QtCore import QTimer
-        from app.services.pimpmysteam_auth import get_token, save_token, verify_async
+        from app.services.steamkustom_auth import get_token, save_token, verify_async
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Connect via PimpMySteam")
@@ -1326,7 +1326,7 @@ class MainWindow(QMainWindow):
         root.addWidget(sk_status)
 
         # Token row
-        from app.services.pimpmysteam_auth import get_token, save_token, verify_async
+        from app.services.steamkustom_auth import get_token, save_token, verify_async
         sk_row = QHBoxLayout()
         sk_token_edit = QLineEdit()
         sk_token_edit.setPlaceholderText("Paste your app token from pimpmysteam.com…")
@@ -1359,7 +1359,7 @@ class MainWindow(QMainWindow):
                     sk_verify_btn.setEnabled(True)
                     if ok and user:
                         save_token(token)
-                        prefs["pimpmysteam_token"] = token
+                        prefs["steamkustom_token"] = token
                         _save_prefs()
                         username = user.get("username", "Connected")
                         sk_status.setText(f"✓ Connected as {username}")

@@ -16,7 +16,7 @@ def get_token() -> Optional[str]:
     try:
         if _PREFS_PATH.exists():
             with open(_PREFS_PATH, encoding="utf-8") as f:
-                return json.load(f).get("pimpmysteam_token") or None
+                return json.load(f).get("steamkustom_token") or None
     except Exception:
         pass
     return None
@@ -29,7 +29,7 @@ def save_token(token: str) -> bool:
         if _PREFS_PATH.exists():
             with open(_PREFS_PATH, encoding="utf-8") as f:
                 data = json.load(f)
-        data["pimpmysteam_token"] = token
+        data["steamkustom_token"] = token
         with open(_PREFS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return True

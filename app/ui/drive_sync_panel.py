@@ -119,7 +119,7 @@ class DriveSyncPanel(QWidget):
 
         # Pre-fill saved token
         try:
-            from app.services.pimpmysteam_auth import get_token
+            from app.services.steamkustom_auth import get_token
             saved = get_token() or ""
             if saved:
                 self._token_edit.setText(saved)
@@ -173,7 +173,7 @@ class DriveSyncPanel(QWidget):
 
     def _refresh(self):
         try:
-            from app.services.pimpmysteam_auth import get_token, is_connected
+            from app.services.steamkustom_auth import get_token, is_connected
             token = get_token()
             if not token:
                 self._set_status("No token — paste one above and click Connect.", _DIM)
@@ -229,10 +229,10 @@ class DriveSyncPanel(QWidget):
                 else "✗ Invalid token — get one at pimpmysteam.com/settings"
             )
             if ok:
-                from app.services.pimpmysteam_auth import save_token
+                from app.services.steamkustom_auth import save_token
                 save_token(token)
 
-        from app.services.pimpmysteam_auth import verify_async
+        from app.services.steamkustom_auth import verify_async
         verify_async(token, _done)
 
     def _upload(self):
