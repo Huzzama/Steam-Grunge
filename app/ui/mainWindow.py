@@ -1015,15 +1015,18 @@ class MainWindow(QMainWindow):
         def _on_result(ok, user):
             verify_btn.setEnabled(True)
             if ok and user:
-                save_token(token_edit.text().strip())
+                token = token_edit.text().strip()
+                save_token(token)
                 name = user.get("username", "Connected")
-                status_lbl.setText(f"✓ Connected as {name}")
-                status_lbl.setStyleSheet("font-size:11px;color:#4ade80;")
+                status_lbl.setText(f"✓ Connected as {name} — token saved")
+                status_lbl.setStyleSheet("font-size:12px;color:#4ade80;font-weight:bold;")
                 self._status_label.setText(
-                    f"[Drive] ✓ PimpMySteam connected as {name}")
+                    f"[Drive] ✓ Connected as {name}")
+                print(f"[PimpMySteam] Token saved for {name}")
             else:
-                status_lbl.setText("✗ Invalid token — get one at pimpmysteam.com")
+                status_lbl.setText("✗ Invalid token — check pimpmysteam.com → Settings → Apps")
                 status_lbl.setStyleSheet("font-size:11px;color:#f87171;")
+                print("[PimpMySteam] Token invalid")
 
         bridge.result.connect(_on_result)
         verify_btn.clicked.connect(_verify)

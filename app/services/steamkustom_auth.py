@@ -40,24 +40,35 @@ def save_token(token: str) -> bool:
 
 def verify_token(token: str) -> Optional[dict]:
     """Verify token. Returns user dict or None."""
+    if not token or not token.strip():
+        print("[PimpMySteam] verify_token: empty token")
+        return None
+
+    token = token.strip()
+    print(f"[PimpMySteam] Verifying token (len={len(token)}) against {API_URL}")
+
     try:
         import urllib.request, urllib.error, ssl
         req = urllib.request.Request(
             f"{API_URL}/auth/me",
             headers={"Authorization": f"Bearer {token}"},
         )
-        # Create SSL context that works on macOS
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             if resp.status == 200:
                 import json as _json
-                return _json.loads(resp.read().decode())
+                data = _json.loads(resp.read().decode())
+                print(f"[PimpMySteam] Token valid — user: {data.get('username')}")
+                return data
     except urllib.error.HTTPError as e:
-        print(f"[PimpMySteam] HTTP {e.code}: {e.reason}")
+        body = ""
+        try: body = e.read().decode()
+        except: pass
+        print(f"[PimpMySteam] HTTP {e.code}: {e.reason} — {body[:200]}")
     except urllib.error.URLError as e:
         print(f"[PimpMySteam] URL error: {e.reason}")
     except Exception as e:
-        print(f"[PimpMySteam] verify_token error: {e}")
+        print(f"[PimpMySteam] verify_token error: {type(e).__name__}: {e}")
     return None
 
 
