@@ -53,7 +53,12 @@ def verify_token(token: str) -> Optional[dict]:
             f"{API_URL}/auth/me",
             headers={"Authorization": f"Bearer {token}"},
         )
-        ctx = ssl.create_default_context()
+        # Use certifi certificates — works in PyInstaller bundles on macOS
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             if resp.status == 200:
                 import json as _json
@@ -90,7 +95,12 @@ def get_drive_token() -> Optional[str]:
             f"{API_URL}/google/drive-token",
             headers={"Authorization": f"Bearer {token}"},
         )
-        ctx = ssl.create_default_context()
+        # Use certifi certificates — works in PyInstaller bundles on macOS
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             if resp.status == 200:
                 import json as _json
