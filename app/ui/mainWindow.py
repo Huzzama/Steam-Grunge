@@ -1,10 +1,11 @@
 import os
+from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QStatusBar, QMenuBar, QMenu, QFileDialog,
     QMessageBox, QToolBar, QPushButton, QLabel, QSlider
 )
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import Qt, QTimer, QSize, QObject, Signal
 from PySide6.QtGui import QAction, QKeySequence, QFont
 from app.services.projectIO import (save_project, load_project,
                                     autosave, SGEPROJ_EXT,
@@ -369,6 +370,12 @@ class MainWindow(QMainWindow):
         drive_download_act.setShortcut(QKeySequence("Ctrl+Shift+D"))
         drive_download_act.triggered.connect(self._drive_download_now)
         cloud_menu.addAction(drive_download_act)
+
+        drive_apply_act = QAction("🎮  Apply Drive Artworks to Steam…", self)
+        drive_apply_act.setToolTip(
+            "Download artworks from Drive and apply them to Steam automatically")
+        drive_apply_act.triggered.connect(self._drive_apply_to_steam)
+        cloud_menu.addAction(drive_apply_act)
 
         cloud_menu.addSeparator()
 
@@ -1056,31 +1063,233 @@ class MainWindow(QMainWindow):
                 self._status_label.setText("[Drive] Not connected — add token in Edit → Preferences")
                 return
             r = download_all(on_progress=lambda m: self._status_label.setText(f"[Drive] {m}"))
-            n = r["downloaded"]
-            self._status_label.setText(f"[Drive] ✓ {n} files downloaded")
+            dl = r.get("downloaded", 0)
+            sy = r.get("synced", 0)
+            parts = [f"✓ {dl} file(s) downloaded"]
+            if sy:
+                parts.append(f"{sy} applied to Steam")
+            from PySide6.QtCore import QTimer as _QT
+            msg = "  |  ".join(parts)
+            _QT.singleShot(0, self, lambda m=msg: self._status_label.setText(f"[Drive] {m}"))
         threading.Thread(target=_work, daemon=True).start()
 
+    def _drive_apply_to_steam(self):
+        """
+        Cloud Sync → Apply Drive Artworks to Steam.
+
+        Downloads all new exports from Drive (into the correct per-type
+        subfolders: exports/cover/, exports/hero/, etc.), then applies them
+        to Steam automatically using sync_artwork(). App IDs are read
+        directly from the filename (e.g. 2124490_hero.png → app 2124490)
+        so no manual input is needed.
+
+        Shows a live progress dialog and a summary when done.
+        """
+        from PySide6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+            QPushButton, QProgressBar,
+        )
+        from PySide6.QtCore import Signal, QObject
+        import threading
+
+        from app.services.drive_sync import is_configured, is_authenticated, download_all
+
+        if not is_configured() or not is_authenticated():
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Not Connected",
+                "Connect your Google Drive first via Cloud Sync → Connect via PimpMySteam…")
+            return
+
+        # ── Progress dialog ───────────────────────────────────────────────────
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Apply Drive Artworks to Steam")
+        dlg.setMinimumWidth(480)
+        dlg.setStyleSheet("""
+            QDialog    { background:#09090b; color:#f4f4f5; }
+            QLabel     { color:#f4f4f5; font-family:'Space Mono'; }
+            QPushButton { background:#60a5fa; color:#000; font-family:'Space Mono';
+                          font-weight:bold; border:none; padding:6px 16px; }
+            QPushButton:disabled { background:#27272a; color:#52525b; }
+            QPushButton#cancel   { background:transparent; color:#71717a;
+                                    border:1px solid #27272a; }
+        """)
+
+        root = QVBoxLayout(dlg)
+        root.setSpacing(12)
+
+        status_lbl = QLabel("Connecting to Drive…")
+        status_lbl.setWordWrap(True)
+        root.addWidget(status_lbl)
+
+        progress = QProgressBar()
+        progress.setRange(0, 0)   # indeterminate while working
+        progress.setFixedHeight(6)
+        progress.setStyleSheet("""
+            QProgressBar         { background:#141418; border:none; border-radius:3px; }
+            QProgressBar::chunk  { background:#60a5fa; border-radius:3px; }
+        """)
+        root.addWidget(progress)
+
+        btn_row = QHBoxLayout()
+        close_btn = QPushButton("CLOSE")
+        close_btn.setObjectName("cancel")
+        close_btn.setEnabled(False)
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        root.addLayout(btn_row)
+
+        # ── Thread → UI signals ───────────────────────────────────────────────
+        class _Sig(QObject):
+            progress_msg = Signal(str)
+            finished     = Signal(bool, str)   # ok, summary_message
+
+        sig = _Sig()
+        sig.progress_msg.connect(lambda m: status_lbl.setText(m))
+        sig.finished.connect(lambda ok, msg: (
+            status_lbl.setText(msg),
+            progress.setRange(0, 1),
+            progress.setValue(1),
+            close_btn.setEnabled(True),
+        ))
+
+        # ── Worker ────────────────────────────────────────────────────────────
+        def _work():
+            try:
+                result = download_all(
+                    on_progress=lambda m: sig.progress_msg.emit(m))
+                downloaded = result.get("downloaded", 0)
+                synced     = result.get("synced", 0)
+                errors     = result.get("errors", [])
+
+                parts = []
+                if downloaded:
+                    parts.append(f"✓ {downloaded} file(s) downloaded")
+                else:
+                    parts.append("No new files on Drive")
+                if synced:
+                    parts.append(f"{synced} artwork(s) applied to Steam")
+                if errors:
+                    parts.append(f"⚠ {len(errors)} error(s): {errors[0]}")
+
+                ok  = not bool(errors)
+                msg = "  |  ".join(parts)
+                sig.finished.emit(ok, msg)
+            except Exception as e:
+                sig.finished.emit(False, f"❌ Error: {e}")
+
+        threading.Thread(target=_work, daemon=True).start()
+        dlg.exec()
+
     def _check_token_on_startup(self):
-        """Check if saved token is valid and update status bar. Non-blocking."""
+        """
+        On startup:
+        1. Verify token
+        2. If valid + Drive linked → download exports from Drive
+        3. Apply any downloaded covers to Steam automatically
+        """
         from app.services.steamkustom_auth import get_token
         token = get_token()
         if not token:
-            return  # No token saved, nothing to do
+            return
 
-        def _done(ok, user):
-            from PySide6.QtCore import QTimer as _QT
-            def _upd():
-                if ok and user:
-                    name = user.get("username", "")
-                    self._status_label.setText(
-                        f"[Drive] ✓ Connected as {name} — token active")
-                else:
-                    self._status_label.setText(
-                        "[Drive] Token saved but could not verify — check connection")
-            _QT.singleShot(0, self, _upd)
+        import threading
 
-        from app.services.steamkustom_auth import verify_async
-        verify_async(token, _done)
+        class _Sig(QObject):
+            status  = Signal(str)
+            done    = Signal(bool, object)
+
+        sig = _Sig()
+        sig.status.connect(lambda m: self._status_label.setText(m))
+
+        def _run():
+            try:
+                from app.services.steamkustom_auth import verify_token
+                user = verify_token(token)
+                if not user:
+                    sig.status.emit("[Drive] Token saved but could not verify")
+                    return
+
+                name = user.get("username", "")
+                sig.status.emit(f"[Drive] ✓ {name} — checking Drive…")
+
+                # Download new exports from Drive
+                try:
+                    from app.services.drive_sync import is_authenticated, download_all
+                    if is_authenticated():
+                        result = download_all(
+                            on_progress=lambda m: sig.status.emit(f"[Drive] {m}")
+                        )
+                        dl = result.get("downloaded", 0)
+                        if dl > 0:
+                            sig.status.emit(
+                                f"[Drive] ✓ {name} — {dl} file{'s' if dl != 1 else ''} synced from Drive")
+                            # Apply downloaded covers to Steam
+                            QTimer.singleShot(500, self, self._apply_covers_to_steam)
+                        else:
+                            sig.status.emit(f"[Drive] ✓ {name} — up to date")
+                    else:
+                        sig.status.emit(
+                            f"[Drive] ✓ {name} — Google Drive not linked "
+                            f"(connect at pimpmysteam.com)")
+                except Exception as e:
+                    sig.status.emit(f"[Drive] ✓ {name} — Drive sync error: {e}")
+
+            except Exception as e:
+                sig.status.emit(f"[Drive] Startup check error: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _apply_covers_to_steam(self):
+        """
+        After downloading from Drive, apply covers to Steam grid folder.
+        Reads steam_id from preferences and copies exported files.
+        """
+        try:
+            import shutil
+            from pathlib import Path
+            from app.config import EXPORT_FOLDER
+            from app.services.steamkustom_auth import verify_token, get_token
+
+            token = get_token()
+            if not token:
+                return
+
+            user = verify_token(token)
+            steam_id = user.get("steam_id") if user else None
+            if not steam_id:
+                return  # Steam not linked
+
+            # Find Steam grid folder
+            import sys
+            if sys.platform == "darwin":
+                steam_base = Path.home() / "Library/Application Support/Steam/userdata"
+            elif sys.platform == "win32":
+                steam_base = Path.home() / "AppData/Roaming/Steam/userdata"
+            else:
+                steam_base = Path.home() / ".steam/steam/userdata"
+
+            grid_dir = steam_base / str(steam_id) / "config" / "grid"
+            if not grid_dir.exists():
+                return  # Steam not installed or wrong ID
+
+            export_dir = Path(EXPORT_FOLDER)
+            if not export_dir.exists():
+                return
+
+            copied = 0
+            for f in export_dir.rglob("*"):
+                if f.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+                    dest = grid_dir / f.name
+                    if not dest.exists():
+                        shutil.copy2(f, dest)
+                        copied += 1
+
+            if copied > 0:
+                self._status_label.setText(
+                    f"[Drive] ✓ {copied} cover{'s' if copied != 1 else ''} applied to Steam")
+        except Exception as e:
+            print(f"[Drive] Apply covers error: {e}")
 
     def _open_drive_status(self):
         """Cloud Sync → Sync Status."""
@@ -1765,6 +1974,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Prompt to save before quitting."""
         if self._confirm_discard():
+            # Flush artwork counter to backend before exit
+            try:
+                from app.services.steamSync import _session_artwork_counter
+                _session_artwork_counter.flush()
+            except Exception:
+                pass
             event.accept()
         else:
             event.ignore()

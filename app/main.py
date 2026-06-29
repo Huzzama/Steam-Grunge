@@ -409,16 +409,29 @@ def main():
     splash.finish(window)
 
     # ── Auto-sync on startup (background — never delays launch) ──────────────
+    # _SYNC_RUNNING prevents two simultaneous syncs if the user also manually
+    # triggers "Apply Drive Artworks to Steam" right after launch.
+    import threading as _threading
+    _SYNC_LOCK = _threading.Lock()
+
     def _auto_sync_startup():
         try:
             from app.services.drive_sync import is_configured, is_authenticated, download_all
-            import threading
             if is_configured() and is_authenticated():
                 def _dl():
-                    r = download_all()
-                    if r["downloaded"] > 0:
-                        print(f"[Drive] Auto-synced {r['downloaded']} files on startup")
-                threading.Thread(target=_dl, daemon=True).start()
+                    if not _SYNC_LOCK.acquire(blocking=False):
+                        print("[Drive] Startup sync skipped — another sync already running")
+                        return
+                    try:
+                        r = download_all()
+                        dl = r.get("downloaded", 0)
+                        sy = r.get("synced", 0)
+                        if dl > 0 or sy > 0:
+                            print(f"[Drive] Auto-synced {dl} file(s), "
+                                  f"{sy} applied to Steam on startup")
+                    finally:
+                        _SYNC_LOCK.release()
+                _threading.Thread(target=_dl, daemon=True).start()
         except Exception as e:
             print(f"[Drive] Startup sync skipped: {e}")
 

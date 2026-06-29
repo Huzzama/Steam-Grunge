@@ -12,6 +12,76 @@ import subprocess
 from PIL import Image
 
 
+# ── Session artwork counter ────────────────────────────────────────────────────
+# Accumulates sync count in-memory and flushes to the PimpMySteam backend
+# every 10 minutes (or on app close via flush()).  Never raises — reporting
+# failures are silent so they never block a sync operation.
+
+class _SessionArtworkCounter:
+    """Thread-safe counter that batches artwork-sync reports to the backend."""
+
+    _FLUSH_INTERVAL = 600  # 10 minutes
+
+    def __init__(self):
+        self._lock    = threading.Lock()
+        self._count   = 0
+        self._timer: Optional[threading.Timer] = None
+
+    def increment(self):
+        with self._lock:
+            self._count += 1
+            if self._timer is None:
+                self._timer = threading.Timer(self._FLUSH_INTERVAL, self._flush_and_reset)
+                self._timer.daemon = True
+                self._timer.start()
+
+    def flush(self):
+        """Call on app exit to report any remaining count."""
+        with self._lock:
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+        self._flush_and_reset()
+
+    def _flush_and_reset(self):
+        with self._lock:
+            count = self._count
+            self._count = 0
+            self._timer = None
+        if count <= 0:
+            return
+        try:
+            from app.services.steamkustom_auth import get_token
+            import urllib.request, urllib.error, ssl, json as _j
+            token = get_token()
+            if not token:
+                return
+            payload = _j.dumps({"count": count}).encode()
+            req = urllib.request.Request(
+                "https://api.pimpmysteam.com/stats/artwork-synced",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (compatible; SteamGrunge/1.0)",
+                },
+                method="POST",
+            )
+            try:
+                import certifi
+                ctx = ssl.create_default_context(cafile=certifi.where())
+            except ImportError:
+                ctx = ssl.create_default_context()
+            with urllib.request.urlopen(req, timeout=8, context=ctx):
+                pass
+            print(f"[steamSync] reported {count} artwork sync(s) to backend")
+        except Exception as e:
+            print(f"[steamSync] counter flush error (non-fatal): {e}")
+
+
+_session_artwork_counter = _SessionArtworkCounter()
+
+
 # ── Logging ────────────────────────────────────────────────────────────────────
 
 import logging.handlers as _log_handlers
@@ -1090,6 +1160,8 @@ def sync_artwork(
     result     = SyncResult(success=False, grid_folder=str(grid_dir))
 
     _log(f"[steamSync] app_id={app_id}")
+    # Accumulate in session counter — flushed every 10 min or on app close
+    _session_artwork_counter.increment()
 
     # ── C. Discover librarycache targets recursively ───────────────────────
     appid_dir  = _librarycache_dir(steam_root, app_id)

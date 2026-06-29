@@ -28,10 +28,19 @@ class WorkspaceTab(QWidget):
         self.label    = f"Tab {tab_id}"   # updated when a game is selected
         self.state    = AppState()        # own independent state
 
+        # Main compose timer — fires after user stops dragging
         self._compose_timer = QTimer()
         self._compose_timer.setSingleShot(True)
-        self._compose_timer.setInterval(80)   # was 120 ms — tighter for snappier feel
+        self._compose_timer.setInterval(120)
         self._compose_timer.timeout.connect(self._do_compose)
+
+        # Fast preview timer — fires quickly during drag, skips heavy effects
+        self._preview_timer = QTimer()
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(30)
+        self._preview_timer.timeout.connect(self._do_fast_preview)
+
+        self._is_dragging = False
 
         self._build()
 
@@ -95,7 +104,22 @@ class WorkspaceTab(QWidget):
 
     # ── compose ───────────────────────────────────────────────────────────────
     def schedule_compose(self):
+        """Debounced compose — restarts timer on each call."""
         self._compose_timer.start()
+        # Also fire a fast preview immediately for visual responsiveness
+        self._preview_timer.start()
+
+    def _do_fast_preview(self):
+        """
+        Quick canvas refresh during slider drag.
+        Only updates color adjustments — skips heavy PIL recompose.
+        """
+        try:
+            canvas = self.preview_canvas
+            if hasattr(canvas, "_fast_refresh"):
+                canvas._fast_refresh()
+        except Exception:
+            pass
 
     def _do_compose(self):
         """
@@ -214,7 +238,30 @@ class WorkspaceTab(QWidget):
         for widget in QApplication.topLevelWidgets():
             if hasattr(widget, "_open_sync_dialog"):
                 widget._open_sync_dialog()
+                # After sync dialog, auto-upload to Drive in background
+                self._upload_to_drive_background(widget)
                 return
+
+    def _upload_to_drive_background(self, main_window=None):
+        """Silently upload exports to Drive after a sync — no duplicates."""
+        import threading
+
+        def _run():
+            try:
+                from app.services.drive_sync import is_authenticated, upload_all
+                if not is_authenticated():
+                    return
+                result = upload_all()
+                uploaded = result.get("uploaded", 0)
+                if uploaded > 0 and main_window:
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(0, main_window,
+                        lambda: main_window._status_label.setText(
+                            f"[Drive] ✓ {uploaded} file{'s' if uploaded != 1 else ''} backed up to Drive"))
+            except Exception as e:
+                print(f"[Drive] Background upload error: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # ── undo / redo ───────────────────────────────────────────────────────────
     def undo(self):

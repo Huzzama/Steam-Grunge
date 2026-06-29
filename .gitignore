@@ -69,7 +69,7 @@ desktop.ini
 *.key
 secrets.json
 .env
-
+settings.json
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
 
