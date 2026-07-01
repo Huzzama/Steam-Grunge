@@ -839,7 +839,7 @@ class MainWindow(QMainWindow):
             self._status_label.setText(f"Opened: {path}")
 
     def _export(self):
-        """Export current canvas and remember the path for Sync."""
+        """Export current canvas, remember the path for Sync, and apply to Steam if AppID is confirmed."""
         tab = self.tab_manager.current_tab()
         final = tab.preview_canvas.compose_to_pil()
         if final is None:
@@ -849,12 +849,48 @@ class MainWindow(QMainWindow):
         path = exporter.export_image(
             final,
             tab.state.current_template,
-            tab.state.selected_game_name or "untitled"
+            tab.state.selected_game_name or "untitled",
+            app_id=getattr(tab.state, "confirmed_app_id", None),
         )
         # Store path so Sync always uses this exact file
         tab.state.export_paths[tab.state.current_template] = path
-        print(f"[export] {tab.state.current_template} → {path}")
+        print(f"[export] {tab.state.current_template} -> {path}")
+
+        # ── Auto-apply to Steam if we already have a confirmed AppID ─────────
+        # If the user already confirmed/searched the AppID (e.g. from a prior
+        # Sync dialog or project load), apply directly without opening the
+        # full Sync dialog — this is what makes the Export button feel instant.
+        app_id = getattr(tab.state, "confirmed_app_id", None)
+        if app_id is not None:
+            try:
+                from app.services.steamSync import (
+                    sync_artwork, find_steam_userdata, list_steam_ids
+                )
+                userdata = find_steam_userdata()
+                steam_ids = list_steam_ids(userdata) if userdata else []
+                if userdata and steam_ids:
+                    result = sync_artwork(
+                        app_id=app_id,
+                        steam_id=steam_ids[0],
+                        userdata_path=userdata,
+                        exports={tab.state.current_template: path},
+                        overwrite=True,
+                    )
+                    if result.success:
+                        self._status_label.setText(
+                            f"Exported + applied to Steam: {tab.state.current_template}")
+                        QMessageBox.information(
+                            self, "Exported",
+                            f"Saved and applied to Steam:\n{path}")
+                        return
+                    else:
+                        print(f"[export] Steam sync failed: {result.errors}")
+            except Exception as e:
+                print(f"[export] Steam sync error: {e}")
+
+        # No AppID yet or sync failed — just show the save path
         QMessageBox.information(self, "Exported", f"Saved to:\n{path}")
+
 
     def _reset_filters(self):
         tab = self.tab_manager.current_tab()
@@ -898,10 +934,11 @@ class MainWindow(QMainWindow):
         path = exporter.export_image(
             final,
             tab.state.current_template,
-            tab.state.selected_game_name or "untitled"
+            tab.state.selected_game_name or "untitled",
+            app_id=getattr(tab.state, "confirmed_app_id", None),
         )
         tab.state.export_paths[tab.state.current_template] = path
-        print(f"[sync] exported {tab.state.current_template} → {path}")
+        print(f"[sync] exported {tab.state.current_template} -> {path}")
 
         # ── Build exports dict: fresh current template + any prior exports ────
         exports = {
