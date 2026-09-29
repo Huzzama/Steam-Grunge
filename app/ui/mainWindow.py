@@ -3,10 +3,11 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QStatusBar, QMenuBar, QMenu, QFileDialog,
-    QMessageBox, QToolBar, QPushButton, QLabel, QSlider
+    QMessageBox, QPushButton, QLabel, QSlider, QDialog, QLineEdit,
+    QCheckBox, QComboBox, QListWidget, QProgressBar, QScrollArea, QGridLayout,
 )
 from PySide6.QtCore import Qt, QTimer, QSize, QObject, Signal
-from PySide6.QtGui import QAction, QKeySequence, QFont
+from PySide6.QtGui import QAction, QKeySequence, QColor, QPixmap, QPainter
 from app.services.projectIO import (save_project, load_project,
                                     autosave, SGEPROJ_EXT,
                                     ProjectIOError)
@@ -15,8 +16,89 @@ from app.ui.searchPanel import SearchPanel
 from app.ui.editorPanel import EditorPanel
 from app.ui.floatingContextTb import FloatingContextTb
 from app.ui.tabManager import TabManager
-from app.state import state
-from app.editor import exports as exporter
+from app.ui import icons, kit
+from app.ui.kit import Button, IconButton, Divider, Section, label, hbox, vbox, grid
+from app.ui.theme import C, CONTROL_H, SP, repolish
+
+
+def _dot(color: str, size: int = 8) -> QPixmap:
+    """Small filled circle pixmap for status indicators (rendered at 2x)."""
+    dpr = 2
+    pm = QPixmap(size * dpr, size * dpr)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawEllipse(0, 0, size * dpr, size * dpr)
+    p.end()
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
+def _vsep(height: int = 16) -> QLabel:
+    """1 px vertical hairline for status-bar / toolbar rows."""
+    pm = QPixmap(1, height)
+    pm.fill(QColor(C["border"]))
+    l = QLabel()
+    l.setPixmap(pm)
+    l.setFixedSize(1, height)
+    return l
+
+
+def _menu_icon(name: str):
+    return icons.icon(name, C["text_dim"], 14)
+
+
+class _Dialog(QDialog):
+    """Themed dialog shell: title + optional explanation, body layout, button row."""
+
+    def __init__(self, parent, title: str, explanation: str = "", min_width: int = 480,
+                 icon: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(min_width)
+        self.root = vbox(self, (SP["xl"], SP["lg"], SP["xl"], SP["lg"]), SP["md"])
+        head = hbox(spacing=SP["sm"])
+        if icon:
+            ic = QLabel()
+            ic.setPixmap(icons.pixmap(icon, C["accent"], 18))
+            head.addWidget(ic)
+        head.addWidget(label(title.upper(), "title"), 1)
+        self.root.addLayout(head)
+        if explanation:
+            self.root.addWidget(label(explanation, "dim", wrap=True))
+        self.body = vbox(spacing=SP["md"])
+        self.root.addLayout(self.body, 1)
+        self.root.addWidget(Divider())
+        self.buttons = hbox(spacing=SP["sm"])
+        self.buttons.addStretch()
+        self.root.addLayout(self.buttons)
+
+    def add_button(self, text: str, variant: str = "default", on_click=None, icon=None) -> Button:
+        b = Button(text, variant, icon=icon, on_click=on_click)
+        if variant == "primary":
+            b.setMinimumWidth(140)
+        else:
+            b.setMinimumWidth(90)
+        self.buttons.addWidget(b)
+        return b
+
+
+def _form_row(g: QGridLayout, row: int, text: str, widget, trailing=None):
+    """Grid form row: fixed label column (~110 px) + stretching field (+ optional button)."""
+    l = label(text, "dim")
+    l.setMinimumWidth(110)
+    l.setMaximumWidth(140)
+    g.addWidget(l, row, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    span = 1 if trailing is not None else 2      # no trailing button → field spans both columns
+    if isinstance(widget, QWidget):
+        g.addWidget(widget, row, 1, 1, span)
+    else:
+        g.addLayout(widget, row, 1, 1, span)
+    if trailing is not None:
+        g.addWidget(trailing, row, 2)
+    g.setColumnStretch(1, 1)
 
 # Read version from the VERSION file at project root
 try:
@@ -50,100 +132,12 @@ class MainWindow(QMainWindow):
         # Check PimpMySteam token on startup — non-blocking
         QTimer.singleShot(1500, self._check_token_on_startup)
 
-        # ── Project file state ────────────────────────────────────────────
-        self._project_path: str = ""       # "" = not yet saved to disk
-        self._project_dirty = False        # True when canvas has unsaved changes
-
-        # Autosave every 5 minutes (silently, only when dirty)
+        # Autosave every 5 minutes (silently, only dirty tabs)
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setInterval(5 * 60 * 1000)
         self._autosave_timer.timeout.connect(self._do_autosave)
         self._autosave_timer.start()
 
-    def _build_toolbar(self):
-        tb = QToolBar("Tools")
-        tb.setMovable(False)
-        tb.setIconSize(QSize(18, 18))
-        tb.setStyleSheet("""
-            QToolBar {
-                background: #040608;
-                border-bottom: 1px solid #0d2030;
-                spacing: 2px;
-                padding: 3px 10px;
-            }
-            QPushButton {
-                background: #060c14;
-                color: #405060;
-                border: 1px solid #0d2030;
-                border-radius: 2px;
-                font-family: 'Courier New', monospace;
-                font-size: 12px;
-                padding: 4px 12px;
-                min-width: 36px;
-                min-height: 24px;
-            }
-            QPushButton:hover  {
-                background: #0a1a28;
-                color: #38bdf8;
-                border-color: #1a4060;
-            }
-            QPushButton:pressed { background: #040e18; }
-            QPushButton#crop_btn[active="true"] {
-                background: #04141e;
-                color: #38bdf8;
-                border-color: #1a4060;
-            }
-            QLabel#sep { color: #0d2030; font-size: 16px; padding: 0 3px; }
-        """)
-        self.addToolBar(Qt.TopToolBarArea, tb)
-
-        # App title
-        title = QLabel("⬡ STEAM GRUNGE")
-        title.setStyleSheet("color:#38bdf8; font-family:'Courier New', monospace; "
-                            "font-size:12px; font-weight:bold; padding-right:12px; letter-spacing:3px;")
-        tb.addWidget(title)
-
-        sep1 = QLabel("|"); sep1.setObjectName("sep"); tb.addWidget(sep1)
-
-        # Undo / Redo
-        self._btn_undo = QPushButton("↩ Undo")
-        self._btn_undo.setToolTip("Undo  (Ctrl+Z)")  
-        self._btn_undo.clicked.connect(self._undo)
-        tb.addWidget(self._btn_undo)
-
-        self._btn_redo = QPushButton("↪ Redo")
-        self._btn_redo.setToolTip("Redo  (Ctrl+Y)")
-        self._btn_redo.clicked.connect(self._redo)
-        tb.addWidget(self._btn_redo)
-
-        sep2 = QLabel("|"); sep2.setObjectName("sep"); tb.addWidget(sep2)
-
-        # Crop tool
-        self._btn_crop = QPushButton("✂ Crop")
-        self._btn_crop.setObjectName("crop_btn")
-        self._btn_crop.setToolTip("Crop selected layer  (select image layer first)")
-        self._btn_crop.setCheckable(True)
-        self._btn_crop.clicked.connect(self._toggle_crop)
-        tb.addWidget(self._btn_crop)
-
-        # Crop apply / cancel (hidden until crop active)
-        self._btn_crop_apply = QPushButton("✔ Apply Crop")
-        self._btn_crop_apply.setStyleSheet(
-            "background:#1a2e1a; color:#88cc88; border-color:#3a6e3a;")
-        self._btn_crop_apply.setToolTip("Apply crop  (Enter)")
-        self._btn_crop_apply.clicked.connect(lambda: self._end_crop(True))
-        self._btn_crop_apply.setVisible(False)
-        tb.addWidget(self._btn_crop_apply)
-
-        self._btn_crop_cancel = QPushButton("✖ Cancel")
-        self._btn_crop_cancel.setStyleSheet(
-            "background:#2e1a1a; color:#cc8888; border-color:#6e3a3a;")
-        self._btn_crop_cancel.setToolTip("Cancel crop  (Esc)")
-        self._btn_crop_cancel.clicked.connect(lambda: self._end_crop(False))
-        self._btn_crop_cancel.setVisible(False)
-        tb.addWidget(self._btn_crop_cancel)
-
-    # ── Safe widget helper ─────────────────────────────────────────────────────
     @staticmethod
     def _widget_alive(w) -> bool:
         """Return True if w is a valid, non-deleted Qt widget."""
@@ -168,14 +162,14 @@ class MainWindow(QMainWindow):
         """Fonts → Import Font Pack (ZIP)…"""
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         from app.ui.fontImporter import import_fonts
-        from app.config import FONTS_DIR
+        from app.config import USER_FONTS_DIR as FONTS_DIR
         path, _ = QFileDialog.getOpenFileName(
             self, "Import Font Pack", "",
             "ZIP Font Pack (*.zip)"
         )
         if not path:
             return
-        result = import_fonts([path], FONTS_DIR)
+        result = import_fonts([path], str(FONTS_DIR))
         self._refresh_font_combo()
         QMessageBox.information(self, "Font Import", result.summary())
 
@@ -183,14 +177,14 @@ class MainWindow(QMainWindow):
         """Fonts → Import Font Files…"""
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         from app.ui.fontImporter import import_fonts
-        from app.config import FONTS_DIR
+        from app.config import USER_FONTS_DIR as FONTS_DIR
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Import Fonts", "",
             "Font Files (*.ttf *.otf *.woff *.woff2)"
         )
         if not paths:
             return
-        result = import_fonts(paths, FONTS_DIR)
+        result = import_fonts(paths, str(FONTS_DIR))
         self._refresh_font_combo()
         msg = result.summary()
         if result.failed:
@@ -200,7 +194,7 @@ class MainWindow(QMainWindow):
     def _open_fonts_folder(self):
         """Fonts → Open Fonts Folder…"""
         import subprocess, sys
-        from app.config import FONTS_DIR
+        from app.config import USER_FONTS_DIR as FONTS_DIR
         os.makedirs(FONTS_DIR, exist_ok=True)
         if sys.platform == "win32":
             os.startfile(FONTS_DIR)
@@ -268,247 +262,120 @@ class MainWindow(QMainWindow):
         if apply and hasattr(self, 'editor_panel'):
             self.editor_panel._refresh_layer_list()
 
-    def _build_toolbar(self):
-        pass  # toolbar merged into menubar
-
     def _build_menu(self):
         menubar = self.menuBar()
-        menubar.setStyleSheet("""
-            QMenuBar {
-                background: #111;
-                color: #bbb;
-                font-family: 'Courier New';
-                font-size: 13px;
-                border-bottom: 1px solid #2a2a2a;
-                padding: 2px 4px;
-                spacing: 2px;
-            }
-            QMenuBar::item {
-                padding: 4px 10px;
-                border-radius: 3px;
-            }
-            QMenuBar::item:selected { background: #0a1828; color: #38bdf8; }
-            QMenu {
-                background: #060c14;
-                border: 1px solid #0d2030;
-                color: #80a0b0;
-                font-family: 'Courier New', monospace;
-                font-size: 12px;
-            }
-            QMenu::item:selected { background: #0a1828; color: #38bdf8; }
-            QMenu::separator { height: 1px; background: #0d2030; margin: 3px 8px; }
-        """)
 
-        # ═══════════════════════════════════════════════════════════════════
-        # FONTS
-        # ═══════════════════════════════════════════════════════════════════
+        def _act(menu, text, slot, shortcut=None, tip=None, icon=None):
+            a = QAction(text, self)
+            if icon:
+                a.setIcon(_menu_icon(icon))
+            if shortcut:
+                a.setShortcut(QKeySequence(shortcut))
+            if tip:
+                a.setToolTip(tip)
+            a.triggered.connect(slot)
+            menu.addAction(a)
+            return a
+
+        # ── FILE ──────────────────────────────────────────────────────────
+        file_menu = menubar.addMenu("File")
+        _act(file_menu, "New Project (new tab)",      self._new_project,       "Ctrl+N",       icon="file-plus")
+        _act(file_menu, "Open Project…",              self._open_project,      "Ctrl+O",       icon="folder-open")
+        _act(file_menu, "Save Project",               self._save_project,      "Ctrl+S",       icon="save")
+        _act(file_menu, "Save Project As…",           self._save_project_as,   "Ctrl+Shift+S", icon="save-all")
+        file_menu.addSeparator()
+        _act(file_menu, "Import Image as Layer…",     self._import_image_as_layer, "Ctrl+Shift+O", icon="image-plus")
+        _act(file_menu, "Import Texture Files…",      self._import_texture_files, icon="upload")
+        _act(file_menu, "Open Textures Folder…",      self._open_textures_folder, icon="folder")
+        file_menu.addSeparator()
+        _act(file_menu, "Export Artwork (+ apply to Steam)", self._export,    "Ctrl+E",       icon="download")
+        _act(file_menu, "Export All Assets…",         self._export_all_assets, "Ctrl+Shift+E", icon="files")
+        _act(file_menu, "Open Exports Folder…",       self._open_exports_folder, icon="folder")
+        file_menu.addSeparator()
+        _act(file_menu, "Preferences…",               self._open_preferences,  "Ctrl+,",       icon="settings")
+        file_menu.addSeparator()
+        _act(file_menu, "Quit",                       self.close,              "Ctrl+Q",       icon="log-out")
+
+        # ── EDIT ──────────────────────────────────────────────────────────
+        edit_menu = menubar.addMenu("Edit")
+        _act(edit_menu, "Undo",                       self._undo,              "Ctrl+Z",       icon="undo-2")
+        redo_act = _act(edit_menu, "Redo",            self._redo,              "Ctrl+Y",       icon="redo-2")
+        redo_act.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        edit_menu.addSeparator()
+        _act(edit_menu, "Duplicate Layer",            self._duplicate_layer,   "Ctrl+D",       icon="copy")
+        _act(edit_menu, "Delete Layer",               self._delete_layer,      "Delete",       icon="trash")
+        _act(edit_menu, "Crop Layer",                 self._toggle_crop,       "Ctrl+Shift+C", icon="crosshair")
+        edit_menu.addSeparator()
+        _act(edit_menu, "Reset Effects",              self._reset_filters, icon="rotate-ccw")
+
+        # ── FONTS ─────────────────────────────────────────────────────────
         fonts_menu = menubar.addMenu("Fonts")
-
-        import_font_zip_act = QAction("Import Font Pack (ZIP)…", self)
-        import_font_zip_act.triggered.connect(self._import_font_zip)
-        fonts_menu.addAction(import_font_zip_act)
-
-        import_font_files_act = QAction("Import Font Files…", self)
-        import_font_files_act.triggered.connect(self._import_font_files)
-        fonts_menu.addAction(import_font_files_act)
-
+        _act(fonts_menu, "Import Font Pack (ZIP)…",   self._import_font_zip, icon="package")
+        _act(fonts_menu, "Import Font Files…",        self._import_font_files, icon="type")
         fonts_menu.addSeparator()
+        _act(fonts_menu, "Reload Font Library",       self._reload_font_library, icon="refresh-cw")
+        _act(fonts_menu, "Open Fonts Folder…",        self._open_fonts_folder, icon="folder")
 
-        reload_fonts_act = QAction("Reload Font Library", self)
-        reload_fonts_act.triggered.connect(self._reload_font_library)
-        fonts_menu.addAction(reload_fonts_act)
-
-        open_fonts_dir_act = QAction("Open Fonts Folder…", self)
-        open_fonts_dir_act.triggered.connect(self._open_fonts_folder)
-        fonts_menu.addAction(open_fonts_dir_act)
-
-        # ═══════════════════════════════════════════════════════════════════
-        # SYNC TO STEAM
-        # ═══════════════════════════════════════════════════════════════════
+        # ── SYNC TO STEAM ─────────────────────────────────────────────────
         sync_menu = menubar.addMenu("Sync to Steam")
-
-        sync_now_act = QAction("⇪  Sync to Steam…", self)
-        sync_now_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
-        sync_now_act.triggered.connect(self._open_sync_dialog)
-        sync_menu.addAction(sync_now_act)
-
+        _act(sync_menu, "Sync to Steam…",             self._open_sync_dialog,  "Ctrl+Shift+A", icon="upload")
         sync_menu.addSeparator()
-
-        locate_steam_act = QAction("Locate Steam Folder…", self)
-        locate_steam_act.setToolTip("Manually set Steam installation path if auto-detection fails")
-        locate_steam_act.triggered.connect(self._locate_steam_folder)
-        sync_menu.addAction(locate_steam_act)
-
-        rescan_act = QAction("Rescan Steam Library", self)
-        rescan_act.setToolTip("Re-check Steam folders and available user accounts")
-        rescan_act.triggered.connect(self._rescan_steam_library)
-        sync_menu.addAction(rescan_act)
-
+        _act(sync_menu, "Locate Steam Folder…",       self._locate_steam_folder,
+             tip="Manually set Steam installation path if auto-detection fails", icon="folder-open")
+        _act(sync_menu, "Rescan Steam Library",       self._rescan_steam_library,
+             tip="Re-check Steam folders and available user accounts", icon="refresh-cw")
         sync_menu.addSeparator()
+        _act(sync_menu, "Open Exports Folder…",       self._open_exports_folder, icon="folder")
 
-        open_exports_sync_act = QAction("Open Exports Folder…", self)
-        open_exports_sync_act.triggered.connect(self._open_exports_folder)
-        sync_menu.addAction(open_exports_sync_act)
-
-        # ═══════════════════════════════════════════════════════════════════
-        # CLOUD SYNC
-        # ═══════════════════════════════════════════════════════════════════
+        # ── CLOUD SYNC ────────────────────────────────────────────────────
         cloud_menu = menubar.addMenu("Cloud Sync")
-
-        drive_connect_act = QAction("Connect via PimpMySteam…", self)
-        drive_connect_act.triggered.connect(self._open_drive_connect)
-        cloud_menu.addAction(drive_connect_act)
-
+        _act(cloud_menu, "Connect via PimpMySteam…",  self._open_drive_connect, icon="key-round")
         cloud_menu.addSeparator()
-
-        drive_upload_act = QAction("⬆  Upload to Drive", self)
-        drive_upload_act.setShortcut(QKeySequence("Ctrl+Shift+U"))
-        drive_upload_act.triggered.connect(self._drive_upload_now)
-        cloud_menu.addAction(drive_upload_act)
-
-        drive_download_act = QAction("⬇  Download from Drive", self)
-        drive_download_act.setShortcut(QKeySequence("Ctrl+Shift+D"))
-        drive_download_act.triggered.connect(self._drive_download_now)
-        cloud_menu.addAction(drive_download_act)
-
-        drive_apply_act = QAction("🎮  Apply Drive Artworks to Steam…", self)
-        drive_apply_act.setToolTip(
-            "Download artworks from Drive and apply them to Steam automatically")
-        drive_apply_act.triggered.connect(self._drive_apply_to_steam)
-        cloud_menu.addAction(drive_apply_act)
-
+        _act(cloud_menu, "Back Up Steam Artwork to Drive",
+             lambda: self._drive_backup_restore("backup"), "Ctrl+Shift+U",
+             tip="Zip your Steam userdata/<id>/config/grid folder and upload it to Drive", icon="cloud-upload")
+        _act(cloud_menu, "Restore Steam Artwork from Drive…",
+             lambda: self._drive_backup_restore("restore"), "Ctrl+Shift+D",
+             tip="Download the backup ZIP and extract it into your Steam grid folder", icon="cloud-download")
         cloud_menu.addSeparator()
+        _act(cloud_menu, "Backup Status…",            self._open_drive_status, icon="cloud")
 
-        drive_status_act = QAction("Sync Status…", self)
-        drive_status_act.triggered.connect(self._open_drive_status)
-        cloud_menu.addAction(drive_status_act)
-
-        # ═══════════════════════════════════════════════════════════════════
-        # HELP
-        # ═══════════════════════════════════════════════════════════════════
+        # ── HELP ──────────────────────────────────────────────────────────
         help_menu = menubar.addMenu("Help")
-
-        api_key_act = QAction("Getting SteamGridDB API Key", self)
-        api_key_act.triggered.connect(self._show_api_key_help)
-        help_menu.addAction(api_key_act)
-
-        quickstart_act = QAction("Quick Start Tutorial", self)
-        quickstart_act.triggered.connect(self._show_quickstart)
-        help_menu.addAction(quickstart_act)
-
-        shortcuts_act = QAction("Keyboard Shortcuts", self)
-        shortcuts_act.triggered.connect(self._show_shortcuts)
-        help_menu.addAction(shortcuts_act)
-
+        _act(help_menu, "Getting SteamGridDB API Key", self._show_api_key_help, icon="key-round")
+        _act(help_menu, "Quick Start Tutorial",       self._show_quickstart, icon="zap")
+        _act(help_menu, "Keyboard Shortcuts",         self._show_shortcuts, icon="list")
         help_menu.addSeparator()
-
-        report_act = QAction("Report Issue", self)
-        report_act.triggered.connect(self._report_issue)
-        help_menu.addAction(report_act)
-
-        check_updates_act = QAction("Check for Updates", self)
-        check_updates_act.triggered.connect(self._check_for_updates)
-        help_menu.addAction(check_updates_act)
-
+        _act(help_menu, "Report Issue",               self._report_issue, icon="triangle-alert")
+        _act(help_menu, "Check for Updates",          self._check_for_updates, icon="refresh-cw")
         help_menu.addSeparator()
+        _act(help_menu, "About",                      self._show_about, icon="info")
 
-        about_act = QAction("About", self)
-        about_act.triggered.connect(self._show_about)
-        help_menu.addAction(about_act)
-
-        # ── Inline action buttons (right of menu items) ───────────────────────
-        # Spacer to push buttons to the left but after menu items
-        sep_label = QLabel("  |  ")
-        sep_label.setStyleSheet("color:#333; font-size:16px; padding: 0 2px;")
-        menubar.setCornerWidget(None)  # clear any corner widget
-
-        btn_style = """
-            QPushButton {
-                background: transparent;
-                color: #999;
-                border: 1px solid #333;
-                border-radius: 3px;
-                font-family: 'Courier New';
-                font-size: 12px;
-                padding: 2px 10px;
-                margin: 1px 2px;
-            }
-            QPushButton:hover  { background: #222; color: #ddd; border-color: #555; }
-            QPushButton:pressed { background: #1a1a2a; }
-            QPushButton:checked {
-                background: #1a2e1a; color: #88cc88;
-                border-color: #3a6e3a;
-            }
-        """
-
-        # We add them as a corner widget container
+        # ── Corner: crop group + Sync to Steam ─────────────────────────────
+        menubar.setMinimumHeight(CONTROL_H + SP["sm"])
         corner = QWidget()
-        corner.setStyleSheet("background: #111;")
-        corner_layout = QHBoxLayout(corner)
-        corner_layout.setContentsMargins(0, 0, 6, 0)
-        corner_layout.setSpacing(3)
+        corner_layout = hbox(corner, (SP["sm"], 3, SP["sm"], 3), SP["xs"])
 
-        divider = QLabel("|")
-        divider.setStyleSheet("color:#0d2030; font-size:15px; padding: 0 4px;")
-        corner_layout.addWidget(divider)
+        # Undo / redo / crop live in the status bar; the corner only carries the
+        # one action people reach for constantly. The hidden buttons keep the
+        # old attribute names alive for the crop state machine.
+        self._btn_undo = IconButton("undo-2", "Undo  (Ctrl+Z)", 15, on_click=self._undo)
+        self._btn_redo = IconButton("redo-2", "Redo  (Ctrl+Y)", 15, on_click=self._redo)
+        self._btn_crop = IconButton("crosshair", "Crop selected layer", 15, checkable=True, on_click=self._toggle_crop)
+        self._btn_crop_apply = IconButton("check", "Apply crop  (Enter)", 15, color=C["green"],
+                                          on_click=lambda: self._end_crop(True))
+        self._btn_crop_cancel = IconButton("x", "Cancel crop  (Esc)", 15, color=C["red"],
+                                           on_click=lambda: self._end_crop(False))
+        for b in (self._btn_undo, self._btn_redo, self._btn_crop, self._btn_crop_apply, self._btn_crop_cancel):
+            b.setParent(corner)
+            b.setVisible(False)
 
-        self._btn_undo = QPushButton("↩ Undo")
-        self._btn_undo.setToolTip("Undo  (Ctrl+Z)")
-        self._btn_undo.setStyleSheet(btn_style)
-        self._btn_undo.clicked.connect(self._undo)
-        corner_layout.addWidget(self._btn_undo)
-
-        self._btn_redo = QPushButton("↪ Redo")
-        self._btn_redo.setToolTip("Redo  (Ctrl+Y)")
-        self._btn_redo.setStyleSheet(btn_style)
-        self._btn_redo.clicked.connect(self._redo)
-        corner_layout.addWidget(self._btn_redo)
-
-        divider2 = QLabel("|")
-        divider2.setStyleSheet("color:#0d2030; font-size:15px; padding: 0 4px;")
-        corner_layout.addWidget(divider2)
-
-        self._btn_crop = QPushButton("✂ Crop")
-        self._btn_crop.setToolTip("Crop selected layer  (select image layer first)")
-        self._btn_crop.setCheckable(True)
-        self._btn_crop.setStyleSheet(btn_style)
-        self._btn_crop.clicked.connect(self._toggle_crop)
-        corner_layout.addWidget(self._btn_crop)
-
-        self._btn_crop_apply = QPushButton("✔ Apply")
-        self._btn_crop_apply.setStyleSheet(
-            btn_style + "QPushButton { background:#1a2e1a; color:#88cc88; border-color:#3a6e3a; }")
-        self._btn_crop_apply.setToolTip("Apply crop  (Enter)")
-        self._btn_crop_apply.clicked.connect(lambda: self._end_crop(True))
-        self._btn_crop_apply.setVisible(False)
-        corner_layout.addWidget(self._btn_crop_apply)
-
-        self._btn_crop_cancel = QPushButton("✖")
-        self._btn_crop_cancel.setStyleSheet(
-            btn_style + "QPushButton { background:#2e1a1a; color:#cc8888; border-color:#6e3a3a; }")
-        self._btn_crop_cancel.setToolTip("Cancel crop  (Esc)")
-        self._btn_crop_cancel.clicked.connect(lambda: self._end_crop(False))
-        self._btn_crop_cancel.setVisible(False)
-        corner_layout.addWidget(self._btn_crop_cancel)
-
-        divider3 = QLabel("|")
-        divider3.setStyleSheet("color:#0d2030; font-size:15px; padding: 0 4px;")
-        corner_layout.addWidget(divider3)
-
-        divider_sync = QLabel("|")
-        divider_sync.setStyleSheet("color:#0d2030; font-size:15px; padding: 0 4px;")
-        corner_layout.addWidget(divider_sync)
-
-        self._btn_sync = QPushButton("⇪ Sync to Steam")
-        self._btn_sync.setToolTip("Install artwork into Steam\'s custom grid folder")
-        self._btn_sync.setStyleSheet(btn_style + """
-            QPushButton { color: #88cc88; border-color: #3a5a3a; }
-            QPushButton:hover { background: #1a2e1a; color: #aaffaa; border-color: #55aa55; }
-        """)
-        self._btn_sync.clicked.connect(self._open_sync_dialog)
+        self._btn_sync = Button("Sync to Steam", "success", icon="upload", on_click=self._open_sync_dialog,
+                                tooltip="Install artwork into Steam's custom grid folder")
         corner_layout.addWidget(self._btn_sync)
 
-        menubar.setCornerWidget(corner, Qt.TopRightCorner)
+        self._menu_corner = corner            # keep a reference — PySide does not take ownership
+        menubar.setCornerWidget(corner, Qt.Corner.TopRightCorner)
 
     def _build_ui(self):
         central = QWidget()
@@ -520,13 +387,15 @@ class MainWindow(QMainWindow):
         # Tab manager owns the tab bar + all workspaces
         self.tab_manager = TabManager()
         self.tab_manager.status_changed.connect(self._status_label.setText)
-        # Mark project dirty whenever any tab's canvas changes
-        self.tab_manager.current_tab().preview_canvas.layers_changed.connect(
-            self._mark_dirty)
-        self.tab_manager.current_tab().preview_canvas.zoom_changed.connect(
-            self._on_canvas_zoom_changed)
-        self.tab_manager.current_tab().editor_panel.settings_changed.connect(
-            self._mark_dirty)
+        # Every tab tracks its own dirty flag / project path; the window title
+        # and zoom slider follow whichever tab is current.
+        self.tab_manager.zoom_changed.connect(self._on_canvas_zoom_changed)
+        self.tab_manager.current_changed.connect(lambda _t: self._update_title())
+        self.tab_manager.close_requested.connect(self._close_tab_requested)
+        self.tab_manager.tab_added.connect(
+            lambda t: t.dirty_changed.connect(self._update_title))
+        for t in self.tab_manager.tabs():
+            t.dirty_changed.connect(self._update_title)
 
         # Periodically refresh the API key status indicator (every 3s)
         # so it updates immediately after the user sets their key without
@@ -538,11 +407,17 @@ class MainWindow(QMainWindow):
         self._api_status_timer.start()
         root_layout.addWidget(self.tab_manager, 1)
 
-        # Ctrl+T → new tab,  Ctrl+W → close tab
+        # Tab shortcuts
         from PySide6.QtGui import QShortcut
-        QShortcut(QKeySequence("Ctrl+T"), self).activated.connect(self.tab_manager.add_tab)
+        QShortcut(QKeySequence("Ctrl+T"), self).activated.connect(
+            lambda: self.tab_manager.add_tab())
         QShortcut(QKeySequence("Ctrl+W"), self).activated.connect(
-            lambda: self.tab_manager.close_tab(self.tab_manager._stack.currentIndex()))
+            lambda: self._close_tab_requested(self.tab_manager._stack.currentIndex()))
+        QShortcut(QKeySequence("Ctrl+Tab"), self).activated.connect(
+            lambda: self.tab_manager.next_tab(+1))
+        QShortcut(QKeySequence("Ctrl+Shift+Tab"), self).activated.connect(
+            lambda: self.tab_manager.next_tab(-1))
+        self._update_title()
 
     # ── proxy properties so all existing slot code keeps working ──────────────
     @property
@@ -554,175 +429,100 @@ class MainWindow(QMainWindow):
         return self.tab_manager.editor_panel
 
     def _build_status_bar(self):
-        bar_style = """
-            QStatusBar {
-                background: #040608;
-                color: #253545;
-                font-size: 11px;
-                font-family: 'Courier New', monospace;
-                border-top: 1px solid #0d2030;
-                padding: 0px;
-            }
-            QStatusBar::item { border: none; }
-        """
-        btn_style = """
-            QPushButton {
-                background: transparent;
-                color: #777;
-                border: 1px solid #2a2a2a;
-                border-radius: 3px;
-                font-family: 'Courier New';
-                font-size: 11px;
-                padding: 2px 8px;
-                margin: 2px 2px;
-            }
-            QPushButton:hover  { background: #1e1e2e; color: #bbb; border-color: #444; }
-            QPushButton:pressed { background: #111; }
-            QPushButton:checked { background: #1a2e1a; color: #88cc88; border-color: #3a6e3a; }
-        """
-
         self.status_bar = QStatusBar()
+        self.status_bar.setSizeGripEnabled(False)
+        self.status_bar.setMinimumHeight(CONTROL_H + 2 * SP["xs"])
         self.setStatusBar(self.status_bar)
-        self.status_bar.setStyleSheet(bar_style)
 
-        # ── Left side: action buttons ──────────────────────────────────────────
+        # ── Left: undo / redo · crop group · status message ────────────────
         left_w = QWidget()
-        left_w.setStyleSheet("background:transparent;")
-        left_lay = QHBoxLayout(left_w)
-        left_lay.setContentsMargins(4, 0, 4, 0)
-        left_lay.setSpacing(2)
+        left_lay = hbox(left_w, (SP["sm"], 0, SP["sm"], 0), SP["sm"])
 
-        for label, tip, slot in [
-            ("↩", "Undo  (Ctrl+Z)",      self._undo),
-            ("↪", "Redo  (Ctrl+Y)",       self._redo),
-        ]:
-            b = QPushButton(label)
-            b.setToolTip(tip)
-            b.setStyleSheet(btn_style)
-            b.setFixedSize(28, 22)
-            b.clicked.connect(slot)
-            left_lay.addWidget(b)
+        self._sb_btn_undo = IconButton("undo-2", "Undo  (Ctrl+Z)", 15, on_click=self._undo)
+        self._sb_btn_redo = IconButton("redo-2", "Redo  (Ctrl+Y)", 15, on_click=self._redo)
+        left_lay.addWidget(self._sb_btn_undo)
+        left_lay.addWidget(self._sb_btn_redo)
+        left_lay.addWidget(_vsep())
 
-        sep = QLabel("|")
-        sep.setStyleSheet("color:#2a2a2a; padding:0 3px;")
-        left_lay.addWidget(sep)
-
-        self._sb_btn_crop = QPushButton("✂")
-        self._sb_btn_crop.setToolTip("Crop layer  (Ctrl+Shift+C)")
-        self._sb_btn_crop.setStyleSheet(btn_style)
-        self._sb_btn_crop.setFixedSize(28, 22)
-        self._sb_btn_crop.setCheckable(True)
-        self._sb_btn_crop.clicked.connect(self._toggle_crop)
+        self._sb_btn_crop = IconButton("crosshair", "Crop layer  (Ctrl+Shift+C)", 15,
+                                       checkable=True, on_click=self._toggle_crop)
         left_lay.addWidget(self._sb_btn_crop)
-
-        self._sb_crop_apply = QPushButton("✔")
-        self._sb_crop_apply.setToolTip("Apply crop  (Enter)")
-        self._sb_crop_apply.setStyleSheet(
-            btn_style + "QPushButton{color:#88cc88;border-color:#3a6e3a;}")
-        self._sb_crop_apply.setFixedSize(28, 22)
+        self._sb_crop_apply = IconButton("check", "Apply crop  (Enter)", 15, color=C["green"],
+                                         on_click=lambda: self._end_crop(True))
         self._sb_crop_apply.setVisible(False)
-        self._sb_crop_apply.clicked.connect(lambda: self._end_crop(True))
         left_lay.addWidget(self._sb_crop_apply)
-
-        self._sb_crop_cancel = QPushButton("✖")
-        self._sb_crop_cancel.setToolTip("Cancel crop  (Esc)")
-        self._sb_crop_cancel.setStyleSheet(
-            btn_style + "QPushButton{color:#cc8888;border-color:#6e3a3a;}")
-        self._sb_crop_cancel.setFixedSize(28, 22)
+        self._sb_crop_cancel = IconButton("x", "Cancel crop  (Esc)", 15, color=C["red"],
+                                          on_click=lambda: self._end_crop(False))
         self._sb_crop_cancel.setVisible(False)
-        self._sb_crop_cancel.clicked.connect(lambda: self._end_crop(False))
         left_lay.addWidget(self._sb_crop_cancel)
+        left_lay.addWidget(_vsep())
 
-        self.status_bar.addWidget(left_w)
+        self._status_label = label("Ready", "dim", elide=True)
+        self._status_label.setFixedHeight(CONTROL_H)
+        left_lay.addWidget(self._status_label, 1)
+        self.status_bar.addWidget(left_w, 1)
 
-        # ── Center: status message ─────────────────────────────────────────────
-        self._status_label = QLabel("Ready")
-        self._status_label.setStyleSheet(
-            "color:#555; font-size:11px; font-family:'Courier New'; padding:0 8px;")
-        self.status_bar.addWidget(self._status_label, 1)
-
-        # ── Right side: zoom slider ────────────────────────────────────────────
+        # ── Right: API key · zoom · rotation ───────────────────────────────
         right_w = QWidget()
-        right_w.setStyleSheet("background:transparent;")
-        right_lay = QHBoxLayout(right_w)
-        right_lay.setContentsMargins(4, 0, 8, 0)
-        right_lay.setSpacing(4)
+        right_lay = hbox(right_w, (SP["sm"], 0, SP["md"], 0), SP["sm"])
 
-        zoom_lbl = QLabel("🔍")
-        zoom_lbl.setStyleSheet("color:#555; font-size:12px;")
-        right_lay.addWidget(zoom_lbl)
+        self._api_key_dot = QLabel()
+        self._api_key_dot.setFixedSize(10, CONTROL_H)
+        self._api_key_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_lay.addWidget(self._api_key_dot)
+        self._api_key_lbl = label("API Key: Not Set", "dim")
+        self._api_key_lbl.setObjectName("api_key_status")
+        self._api_key_lbl.setFixedHeight(CONTROL_H)
+        tip = "SteamGridDB API key status — use Help → Getting SteamGridDB API Key"
+        self._api_key_lbl.setToolTip(tip)
+        self._api_key_dot.setToolTip(tip)
+        right_lay.addWidget(self._api_key_lbl)
+        right_lay.addWidget(_vsep())
 
-        self._zoom_slider = QSlider(Qt.Horizontal)
-        self._zoom_slider.setRange(25, 300)   # 25% – 300%
+        right_lay.addWidget(IconButton("zoom-out", "Zoom out", 15, on_click=lambda: self._zoom_step(-25)))
+        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._zoom_slider.setRange(25, 400)   # 25% – 400% (same as canvas)
         self._zoom_slider.setValue(100)
-        self._zoom_slider.setFixedWidth(120)
-        self._zoom_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                height: 3px; background: #2a2a2a; border-radius: 1px;
-            }
-            QSlider::handle:horizontal {
-                width: 10px; height: 10px;
-                background: #666; border-radius: 5px; margin: -4px 0;
-            }
-            QSlider::handle:horizontal:hover { background: #aaa; }
-            QSlider::sub-page:horizontal { background: #3a6e3a; border-radius: 1px; }
-        """)
+        self._zoom_slider.setFixedSize(120, CONTROL_H)
+        self._zoom_slider.setToolTip("Canvas zoom")
         self._zoom_slider.valueChanged.connect(self._on_zoom_changed)
         right_lay.addWidget(self._zoom_slider)
-
-        self._zoom_pct_label = QLabel("100%")
-        self._zoom_pct_label.setStyleSheet(
-            "color:#555; font-size:11px; font-family:'Courier New'; min-width:36px;")
+        self._zoom_pct_label = label("100%", "mono", align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._zoom_pct_label.setFixedSize(40, CONTROL_H)
         right_lay.addWidget(self._zoom_pct_label)
+        right_lay.addWidget(IconButton("zoom-in", "Zoom in", 15, on_click=lambda: self._zoom_step(+25)))
+        right_lay.addWidget(Button("1:1", "ghost", on_click=self._zoom_reset, tooltip="Reset zoom to 100%"))
+        right_lay.addWidget(_vsep())
 
-        btn_zoom_reset = QPushButton("⊡")
-        btn_zoom_reset.setToolTip("Reset zoom to fit")
-        btn_zoom_reset.setStyleSheet(btn_style)
-        btn_zoom_reset.setFixedSize(24, 22)
-        btn_zoom_reset.clicked.connect(self._zoom_reset)
-        right_lay.addWidget(btn_zoom_reset)
-
-        # ── Separator ─────────────────────────────────────────────────────────
-        sep2 = QLabel("|")
-        sep2.setStyleSheet("color:#2a2a2a; padding:0 3px;")
-        right_lay.addWidget(sep2)
-
-        # ── Canvas rotation dial ───────────────────────────────────────────────
-        btn_rot_ccw = QPushButton("↺")
-        btn_rot_ccw.setToolTip("Rotate canvas −15°")
-        btn_rot_ccw.setStyleSheet(btn_style)
-        btn_rot_ccw.setFixedSize(24, 22)
-        btn_rot_ccw.clicked.connect(lambda: self._rotate_canvas(-15))
-        right_lay.addWidget(btn_rot_ccw)
-
-        self._rot_label = QLabel("• 0.00°")
-        self._rot_label.setStyleSheet(
-            "color:#666; font-size:11px; font-family:'Courier New';"
-            " min-width:56px; padding:0 2px;")
+        right_lay.addWidget(IconButton("rotate-ccw", "Rotate canvas −15°", 15,
+                                       on_click=lambda: self._rotate_canvas(-15)))
+        self._rot_label = label("0.00°", "mono", align=Qt.AlignmentFlag.AlignCenter)
+        self._rot_label.setFixedSize(60, CONTROL_H)
         self._rot_label.setToolTip("Canvas view rotation (double-click to reset)")
         self._rot_label.mouseDoubleClickEvent = lambda _: self._rotate_canvas_reset()
         right_lay.addWidget(self._rot_label)
-
-        btn_rot_cw = QPushButton("↻")
-        btn_rot_cw.setToolTip("Rotate canvas +15°")
-        btn_rot_cw.setStyleSheet(btn_style)
-        btn_rot_cw.setFixedSize(24, 22)
-        btn_rot_cw.clicked.connect(lambda: self._rotate_canvas(+15))
-        right_lay.addWidget(btn_rot_cw)
-
-        # ── API Key status indicator ──────────────────────────────────────────
-        self._api_key_lbl = QLabel("⬤  API Key: Not Set")
-        self._api_key_lbl.setObjectName("api_key_status")
-        self._api_key_lbl.setStyleSheet(
-            "color:#664444; font-family:'Courier New'; font-size:11px;"
-            " padding:2px 8px; margin-right:8px;"
-        )
-        self._api_key_lbl.setToolTip("SteamGridDB API key status — use Help → Getting SteamGridDB API Key")
-        self.status_bar.addPermanentWidget(self._api_key_lbl)
-        # Sync initial state
-        self._refresh_api_key_status()
+        right_lay.addWidget(IconButton("rotate-cw", "Rotate canvas +15°", 15,
+                                       on_click=lambda: self._rotate_canvas(+15)))
 
         self.status_bar.addPermanentWidget(right_w)
+        self._refresh_api_key_status()
+
+        # Transient notifications float above the status bar
+        self.toasts = kit.ToastHost(self)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "toasts"):
+            self.toasts.relayout()
+
+    def _notify(self, msg: str, tone: str = "info"):
+        """Status text + floating toast (saved / exported / synced / errors)."""
+        self._status_label.setText(msg)
+        if hasattr(self, "toasts"):
+            self.toasts.show(msg, tone)
+
+    def _zoom_step(self, delta: int):
+        self._zoom_slider.setValue(max(25, min(400, self._zoom_slider.value() + delta)))
 
     def _on_zoom_changed(self, val: int):
         # Guard: if the canvas triggered this update don't call set_zoom again
@@ -736,7 +536,7 @@ class MainWindow(QMainWindow):
         """Keep the zoom slider in sync when wheel/tool changes the zoom."""
         self._zoom_slider_updating = True
         try:
-            self._zoom_slider.setValue(max(25, min(300, pct)))
+            self._zoom_slider.setValue(max(25, min(400, pct)))
             self._zoom_pct_label.setText(f"{pct}%")
         finally:
             self._zoom_slider_updating = False
@@ -745,27 +545,26 @@ class MainWindow(QMainWindow):
         self._zoom_slider.setValue(100)
 
     def _refresh_api_key_status(self):
-        """Update the API key status pill in the status bar."""
+        """Update the API key status indicator in the status bar."""
         try:
             from app.services.steamgrid import client as sgdb_client
             has_key = bool(sgdb_client.api_key and sgdb_client.api_key.strip())
         except Exception:
             has_key = False
-        if has_key:
-            self._api_key_lbl.setText("⬤  API Key: Connected")
-            self._api_key_lbl.setStyleSheet(
-                "color:#3a7a3a; font-family:'Courier New'; font-size:11px;"
-                " padding:2px 8px; margin-right:8px;"
-            )
-        else:
-            self._api_key_lbl.setText("⬤  API Key: Not Set")
-            self._api_key_lbl.setStyleSheet(
-                "color:#664444; font-family:'Courier New'; font-size:11px;"
-                " padding:2px 8px; margin-right:8px;"
-            )
+        if getattr(self, "_api_key_state", None) == has_key:
+            return
+        self._api_key_state = has_key
+        self._api_key_dot.setPixmap(_dot(C["green"] if has_key else C["red"]))
+        self._api_key_lbl.setText("API Key: Connected" if has_key else "API Key: Not Set")
+        kit.set_tone(self._api_key_lbl, "green" if has_key else None)
         # NOTE: do NOT call reset_pan() here.
         # This method fires on a 3-second repeating timer; calling reset_pan()
         # was silently discarding the user's pan position every 3 seconds.
+
+    def _set_rot_text(self, angle: float):
+        display = angle if angle <= 180 else angle - 360
+        self._rot_label.setText(f"{display:.2f}°")
+        kit.set_tone(self._rot_label, "accent" if abs(angle) > 0.01 else None)
 
     def _rotate_canvas(self, delta: float):
         """Rotate the canvas view by delta degrees."""
@@ -773,27 +572,13 @@ class MainWindow(QMainWindow):
         current = getattr(self.preview_canvas, '_view_angle', 0.0)
         new_angle = (current + delta) % 360
         self.preview_canvas.set_view_angle(new_angle)
-        # Format: show negative as −, keep it in (−180, 180] range for readability
-        display = new_angle if new_angle <= 180 else new_angle - 360
-        self._rot_label.setText(f"• {display:.2f}°")
-        # Highlight label when not at 0
-        if abs(new_angle) > 0.01:
-            self._rot_label.setStyleSheet(
-                "color:#88aacc; font-size:11px; font-family:'Courier New';"
-                " min-width:56px; padding:0 2px;")
-        else:
-            self._rot_label.setStyleSheet(
-                "color:#666; font-size:11px; font-family:'Courier New';"
-                " min-width:56px; padding:0 2px;")
+        self._set_rot_text(new_angle)
 
     def _rotate_canvas_reset(self):
         """Reset canvas view rotation to 0°."""
         if not hasattr(self, 'preview_canvas'): return
         self.preview_canvas.set_view_angle(0.0)
-        self._rot_label.setText("• 0.00°")
-        self._rot_label.setStyleSheet(
-            "color:#666; font-size:11px; font-family:'Courier New';"
-            " min-width:56px; padding:0 2px;")
+        self._set_rot_text(0.0)
 
     def showMessage(self, msg: str):
         """Compatibility shim — update the status label."""
@@ -802,14 +587,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
-
-    def _on_artwork_selected(self, pil_image, game_name: str):
-        self.tab_manager.current_tab()._on_artwork_selected(pil_image, game_name)
-        self.tab_manager.rename_current(game_name)
-
-    def _on_artwork_layer_ready(self, local_path: str, game_name: str):
-        self.tab_manager.current_tab()._on_artwork_layer_ready(local_path, game_name)
-        self.tab_manager.rename_current(game_name)
 
     def _on_settings_changed(self):
         self.tab_manager.current_tab().schedule_compose()
@@ -824,72 +601,58 @@ class MainWindow(QMainWindow):
     def _do_compose(self):
         self.tab_manager.current_tab().schedule_compose()
 
-    def _open_image(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open Image", "",
-            "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
-        )
-        if path:
-            from PIL import Image
-            tab = self.tab_manager.current_tab()
-            img = Image.open(path).convert("RGB")
-            tab.state.base_image = img
-            tab.state.selected_game_name = ""
-            tab.schedule_compose()
-            self._status_label.setText(f"Opened: {path}")
-
     def _export(self):
-        """Export current canvas, remember the path for Sync, and apply to Steam if AppID is confirmed."""
-        tab = self.tab_manager.current_tab()
-        final = tab.preview_canvas.compose_to_pil()
-        if final is None:
-            QMessageBox.warning(self, "Export", "Nothing to export yet.")
-            return
-        tab.state.composed_image = final
-        path = exporter.export_image(
-            final,
-            tab.state.current_template,
-            tab.state.selected_game_name or "untitled",
-            app_id=getattr(tab.state, "confirmed_app_id", None),
-        )
+        """
+        Export current canvas and apply it to Steam.
+
+        Single export path for the whole app: run_export_flow() confirms the
+        AppID (once per game) and saves with the Steam filename, so there is
+        never a nameless GameName_timestamp.png file to clean up afterwards.
+        """
+        from app.services.exportFlow import run_export_flow
+        tab  = self.tab_manager.current_tab()
+        path = run_export_flow(tab, parent_widget=self)
+        if not path:
+            return   # nothing on canvas, or user cancelled the AppID dialog
+
         # Store path so Sync always uses this exact file
         tab.state.export_paths[tab.state.current_template] = path
         print(f"[export] {tab.state.current_template} -> {path}")
 
-        # ── Auto-apply to Steam if we already have a confirmed AppID ─────────
-        # If the user already confirmed/searched the AppID (e.g. from a prior
-        # Sync dialog or project load), apply directly without opening the
-        # full Sync dialog — this is what makes the Export button feel instant.
-        app_id = getattr(tab.state, "confirmed_app_id", None)
-        if app_id is not None:
-            try:
-                from app.services.steamSync import (
-                    sync_artwork, find_steam_userdata, list_steam_ids
+        # ── Apply to Steam ────────────────────────────────────────────────────
+        app_id = tab.state.confirmed_app_id
+        try:
+            from app.services.steamSync import (
+                sync_artwork, find_steam_userdata, list_steam_ids
+            )
+            userdata = find_steam_userdata()
+            steam_id = self._pick_steam_id("Apply to Steam") if userdata else None
+            if userdata and steam_id:
+                result = sync_artwork(
+                    app_id=app_id,
+                    steam_id=steam_id,
+                    userdata_path=userdata,
+                    exports={tab.state.current_template: path},
+                    overwrite=True,
                 )
-                userdata = find_steam_userdata()
-                steam_ids = list_steam_ids(userdata) if userdata else []
-                if userdata and steam_ids:
-                    result = sync_artwork(
-                        app_id=app_id,
-                        steam_id=steam_ids[0],
-                        userdata_path=userdata,
-                        exports={tab.state.current_template: path},
-                        overwrite=True,
-                    )
-                    if result.success:
-                        self._status_label.setText(
-                            f"Exported + applied to Steam: {tab.state.current_template}")
-                        QMessageBox.information(
-                            self, "Exported",
-                            f"Saved and applied to Steam:\n{path}")
-                        return
-                    else:
-                        print(f"[export] Steam sync failed: {result.errors}")
-            except Exception as e:
-                print(f"[export] Steam sync error: {e}")
+                if result.success:
+                    name = tab.state.confirmed_app_name or tab.state.selected_game_name or app_id
+                    self._notify(
+                        f"Applied to Steam: {tab.state.current_template} → {name}  "
+                        f"({os.path.basename(path)})", "success")
+                    return
+                self.toasts.show("Apply to Steam failed — see details", "error")
+                QMessageBox.warning(self, "Apply to Steam failed",
+                                    "Saved the PNG but Steam did not accept it:\n"
+                                    + "\n".join(result.errors))
+                return
+        except Exception as e:
+            self.toasts.show(f"Apply to Steam failed: {e}", "error")
+            QMessageBox.warning(self, "Apply to Steam failed", f"Saved the PNG, but:\n{e}")
+            return
 
-        # No AppID yet or sync failed — just show the save path
-        QMessageBox.information(self, "Exported", f"Saved to:\n{path}")
+        # Steam not found — the PNG is still saved
+        self._notify(f"Saved (Steam not found): {path}", "warning")
 
 
     def _reset_filters(self):
@@ -919,24 +682,15 @@ class MainWindow(QMainWindow):
         never uses a stale previously-exported file after edits.
         Other templates retain their last-exported paths if they exist.
         """
+        from app.services.exportFlow import run_export_flow
         tab = self.tab_manager.current_tab()
 
         # ── Always re-export the current template from the live canvas ────────
-        final = tab.preview_canvas.compose_to_pil()
-        if final is None:
-            QMessageBox.warning(
-                self, "Sync to Steam",
-                "Nothing to sync yet.\n"
-                "Add some artwork to the canvas first."
-            )
-            return
-        tab.state.composed_image = final
-        path = exporter.export_image(
-            final,
-            tab.state.current_template,
-            tab.state.selected_game_name or "untitled",
-            app_id=getattr(tab.state, "confirmed_app_id", None),
-        )
+        # Same single export path as File → Export: confirms AppID once and
+        # saves with the Steam filename (overwrites the previous export).
+        path = run_export_flow(tab, parent_widget=self)
+        if not path:
+            return   # nothing on canvas, or user cancelled the AppID dialog
         tab.state.export_paths[tab.state.current_template] = path
         print(f"[sync] exported {tab.state.current_template} -> {path}")
 
@@ -963,92 +717,61 @@ class MainWindow(QMainWindow):
 
     def _open_drive_connect(self):
         """Cloud Sync → Connect via PimpMySteam — shows inline token dialog."""
-        from PySide6.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
-        )
-        from PySide6.QtCore import QTimer
         from app.services.steamkustom_auth import get_token, save_token, verify_async
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Connect via PimpMySteam")
-        dlg.setMinimumWidth(480)
-        dlg.setStyleSheet(
-            "QDialog{background:#060c14;color:#c8d8e8;font-family:'Courier New';font-size:13px;}"
-            "QLabel{color:#80a0b0;} QLineEdit{background:#040810;border:1px solid #0d2030;"
-            "color:#c8d8e8;padding:6px 10px;font-family:'Courier New';font-size:13px;}"
-            "QPushButton{background:#060c14;border:1px solid #0d2030;color:#607888;"
-            "padding:6px 16px;font-family:'Courier New';font-size:12px;}"
-            "QPushButton:hover{border-color:#38bdf8;color:#38bdf8;}"
-        )
+        dlg = _Dialog(self, "PimpMySteam account",
+                      "Generate a token at pimpmysteam.com → Settings → Apps → Generate Token, "
+                      "then paste it here to enable Google Drive sync.",
+                      min_width=500, icon="key-round")
 
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(12)
-
-        title = QLabel("PIMPMYSTEAM ACCOUNT")
-        title.setStyleSheet("color:#38bdf8;font-size:12px;letter-spacing:3px;font-weight:bold;")
-        lay.addWidget(title)
-
-        desc = QLabel(
-            "Generate a token at pimpmysteam.com\n"
-            "Settings > Apps > Generate Token\n"
-            "Paste it here to enable Google Drive sync."
-        )
-        desc.setWordWrap(True)
-        desc.setStyleSheet("color:#607888;font-size:11px;")
-        lay.addWidget(desc)
-
+        form = grid(h=SP["md"], v=SP["sm"])
         saved = get_token() or ""
         token_edit = QLineEdit()
         token_edit.setPlaceholderText("Paste your app token here…")
-        token_edit.setEchoMode(QLineEdit.Password)
+        token_edit.setEchoMode(QLineEdit.EchoMode.Password)
         if saved:
             token_edit.setText(saved)
-        lay.addWidget(token_edit)
+        _form_row(form, 0, "App token", token_edit)
 
-        status_lbl = QLabel("" if not saved else "✓ Token saved")
-        status_lbl.setStyleSheet(
-            f"font-size:11px;color:{'#4ade80' if saved else '#555'};"
-        )
-        lay.addWidget(status_lbl)
+        status_row = hbox(spacing=SP["sm"])
+        status_ic = QLabel()
+        status_ic.setFixedSize(16, 16)
+        status_lbl = label("Token saved" if saved else "Not connected", "dim", elide=True)
+        if saved:
+            status_ic.setPixmap(icons.pixmap("circle-check", C["green"], 16))
+            kit.set_tone(status_lbl, "green")
+        else:
+            status_ic.setPixmap(icons.pixmap("circle-dot", C["text_muted"], 16))
+        status_row.addWidget(status_ic)
+        status_row.addWidget(status_lbl, 1)
+        _form_row(form, 1, "Status", status_row)
+        dlg.body.addLayout(form)
 
-        link = QLabel('<a href="https://pimpmysteam.com/settings" style="color:#38bdf8;">'
-                      'pimpmysteam.com → Settings → Apps → Generate Token</a>')
-        link.setOpenExternalLinks(True)
-        link.setStyleSheet("font-size:10px;")
-        lay.addWidget(link)
+        link = Button("Open pimpmysteam.com → Settings → Apps", "link", icon="external-link",
+                      on_click=lambda: __import__("webbrowser").open("https://pimpmysteam.com/settings"))
+        dlg.body.addWidget(link, 0, Qt.AlignmentFlag.AlignLeft)
 
-        btn_row = QHBoxLayout()
-        verify_btn = QPushButton("Verify & Save")
-        verify_btn.setStyleSheet(
-            "background:#04141e;border:1px solid #1a4060;color:#38bdf8;"
-            "padding:8px 20px;font-weight:bold;"
-        )
-        close_btn  = QPushButton("Close")
-        btn_row.addStretch()
-        btn_row.addWidget(close_btn)
-        btn_row.addWidget(verify_btn)
-        lay.addLayout(btn_row)
+        def _set_status(text: str, tone, icon_name: str, color: str):
+            status_lbl.setText(text)
+            kit.set_tone(status_lbl, tone)
+            status_ic.setPixmap(icons.pixmap(icon_name, color, 16))
 
-        close_btn.clicked.connect(dlg.accept)
+        close_btn = dlg.add_button("Close", on_click=dlg.accept)
+        verify_btn = dlg.add_button("Verify and save", "primary", icon="shield-check")
 
         # Signal bridge to safely update UI from background thread
-        from PySide6.QtCore import QObject, Signal as _Signal
-
         class _Bridge(QObject):
-            result = _Signal(bool, object)
+            result = Signal(bool, object)
 
         bridge = _Bridge()
 
         def _verify():
             token = token_edit.text().strip()
             if not token:
-                status_lbl.setText("Enter a token first")
-                status_lbl.setStyleSheet("font-size:11px;color:#fbbf24;")
+                _set_status("Enter a token first", "gold", "triangle-alert", C["gold"])
                 return
-            verify_btn.setEnabled(False)
-            status_lbl.setText("Verifying…")
-            status_lbl.setStyleSheet("font-size:11px;color:#38bdf8;")
+            verify_btn.set_loading(True, "Verifying…")
+            _set_status("Verifying…", "accent", "loader-circle", C["accent"])
 
             def _done(ok, user):
                 # Emit signal — always received on main thread
@@ -1057,174 +780,149 @@ class MainWindow(QMainWindow):
             verify_async(token, _done)
 
         def _on_result(ok, user):
-            verify_btn.setEnabled(True)
+            verify_btn.set_loading(False)
             if ok and user:
                 token = token_edit.text().strip()
-                save_token(token)
                 name = user.get("username", "Connected")
-                status_lbl.setText(f"✓ Connected as {name} — token saved")
-                status_lbl.setStyleSheet("font-size:12px;color:#4ade80;font-weight:bold;")
-                self._status_label.setText(
-                    f"[Drive] ✓ Connected as {name}")
+                if not save_token(token):
+                    _set_status("Valid token but could not save it (check write permissions in data folder)",
+                                "red", "circle-x", C["red"])
+                    return
+                _set_status(f"Connected as {name} — token saved", "green", "circle-check", C["green"])
+                self._notify(f"[Drive] Connected as {name}", "success")
                 print(f"[PimpMySteam] Token saved for {name}")
             else:
-                status_lbl.setText("✗ Invalid token — check pimpmysteam.com → Settings → Apps")
-                status_lbl.setStyleSheet("font-size:11px;color:#f87171;")
+                _set_status("Invalid token — check pimpmysteam.com → Settings → Apps", "red", "circle-x", C["red"])
                 print("[PimpMySteam] Token invalid")
 
         bridge.result.connect(_on_result)
         verify_btn.clicked.connect(_verify)
         dlg.exec()
 
-    def _drive_upload_now(self):
-        """Cloud Sync → Upload to Drive."""
-        import threading
-        self._status_label.setText("[Drive] Uploading…")
-        def _work():
-            from app.services.drive_sync import upload_all, is_configured, is_authenticated
-            if not is_configured() or not is_authenticated():
-                self._status_label.setText("[Drive] Not connected — add token in Edit → Preferences")
-                return
-            r = upload_all(on_progress=lambda m: self._status_label.setText(f"[Drive] {m}"))
-            n = r["uploaded"]
-            self._status_label.setText(f"[Drive] ✓ {n} files uploaded")
-        threading.Thread(target=_work, daemon=True).start()
+    def _pick_steam_id(self, title: str):
+        """Return the Steam account to use, asking only when there are several."""
+        from app.services.steamSync import find_steam_userdata, list_steam_ids
+        userdata  = find_steam_userdata()
+        steam_ids = list_steam_ids(userdata) if userdata else []
+        if not steam_ids:
+            QMessageBox.warning(self, title,
+                                "Steam installation not found.\n"
+                                "Use  Sync to Steam → Locate Steam Folder…  first.")
+            return None
+        if len(steam_ids) == 1:
+            return steam_ids[0]
+        # Several accounts: ask once per session (list is most-recent first)
+        remembered = getattr(self, "_steam_id_choice", None)
+        if remembered in steam_ids:
+            return remembered
+        dlg = _Dialog(self, title, "Several Steam accounts were found in userdata. "
+                      "Pick the one whose library should receive the artwork.", min_width=460, icon="gamepad-2")
+        form = grid(h=SP["md"], v=SP["sm"])
+        combo = QComboBox()
+        combo.addItems(steam_ids)
+        _form_row(form, 0, "Steam account", combo)
+        dlg.body.addLayout(form)
+        dlg.add_button("Cancel", on_click=dlg.reject)
+        dlg.add_button("Use this account", "primary", on_click=dlg.accept, icon="check")
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._steam_id_choice = combo.currentText()
+            return self._steam_id_choice
+        return None
 
-    def _drive_download_now(self):
-        """Cloud Sync → Download from Drive."""
-        import threading
-        self._status_label.setText("[Drive] Downloading…")
-        def _work():
-            from app.services.drive_sync import download_all, is_configured, is_authenticated
-            if not is_configured() or not is_authenticated():
-                self._status_label.setText("[Drive] Not connected — add token in Edit → Preferences")
-                return
-            r = download_all(on_progress=lambda m: self._status_label.setText(f"[Drive] {m}"))
-            dl = r.get("downloaded", 0)
-            sy = r.get("synced", 0)
-            parts = [f"✓ {dl} file(s) downloaded"]
-            if sy:
-                parts.append(f"{sy} applied to Steam")
-            from PySide6.QtCore import QTimer as _QT
-            msg = "  |  ".join(parts)
-            _QT.singleShot(0, self, lambda m=msg: self._status_label.setText(f"[Drive] {m}"))
-        threading.Thread(target=_work, daemon=True).start()
-
-    def _drive_apply_to_steam(self):
+    def _drive_backup_restore(self, mode: str):
         """
-        Cloud Sync → Apply Drive Artworks to Steam.
+        Cloud Sync → Back Up / Restore Steam artwork.
 
-        Downloads all new exports from Drive (into the correct per-type
-        subfolders: exports/cover/, exports/hero/, etc.), then applies them
-        to Steam automatically using sync_artwork(). App IDs are read
-        directly from the filename (e.g. 2124490_hero.png → app 2124490)
-        so no manual input is needed.
-
-        Shows a live progress dialog and a summary when done.
+        backup : zip userdata/<id>/config/grid → Drive
+        restore: Drive zip → userdata/<id>/config/grid (overwrites same names)
+        Runs in a worker thread; the UI is only touched through signals.
         """
-        from PySide6.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-            QPushButton, QProgressBar,
-        )
-        from PySide6.QtCore import Signal, QObject
         import threading
+        from app.services.drive_sync import is_configured, backup_grid, restore_grid
 
-        from app.services.drive_sync import is_configured, is_authenticated, download_all
-
-        if not is_configured() or not is_authenticated():
-            from PySide6.QtWidgets import QMessageBox
+        if not is_configured():
             QMessageBox.warning(self, "Not Connected",
-                "Connect your Google Drive first via Cloud Sync → Connect via PimpMySteam…")
+                "Connect your PimpMySteam account first:\n"
+                "Cloud Sync → Connect via PimpMySteam…")
             return
 
+        title    = "Back Up Steam Artwork" if mode == "backup" else "Restore Steam Artwork"
+        steam_id = self._pick_steam_id(title)
+        if not steam_id:
+            return
+
+        if mode == "restore":
+            ans = QMessageBox.question(
+                self, title,
+                f"This will download the backup for Steam account {steam_id}\n"
+                "and overwrite files with the same name in your Steam grid folder.\n\n"
+                "Continue?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ans != QMessageBox.Yes:
+                return
+
         # ── Progress dialog ───────────────────────────────────────────────────
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Apply Drive Artworks to Steam")
-        dlg.setMinimumWidth(480)
-        dlg.setStyleSheet("""
-            QDialog    { background:#09090b; color:#f4f4f5; }
-            QLabel     { color:#f4f4f5; font-family:'Space Mono'; }
-            QPushButton { background:#60a5fa; color:#000; font-family:'Space Mono';
-                          font-weight:bold; border:none; padding:6px 16px; }
-            QPushButton:disabled { background:#27272a; color:#52525b; }
-            QPushButton#cancel   { background:transparent; color:#71717a;
-                                    border:1px solid #27272a; }
-        """)
-
-        root = QVBoxLayout(dlg)
-        root.setSpacing(12)
-
-        status_lbl = QLabel("Connecting to Drive…")
-        status_lbl.setWordWrap(True)
-        root.addWidget(status_lbl)
-
-        progress = QProgressBar()
-        progress.setRange(0, 0)   # indeterminate while working
-        progress.setFixedHeight(6)
-        progress.setStyleSheet("""
-            QProgressBar         { background:#141418; border:none; border-radius:3px; }
-            QProgressBar::chunk  { background:#60a5fa; border-radius:3px; }
-        """)
-        root.addWidget(progress)
-
-        btn_row = QHBoxLayout()
-        close_btn = QPushButton("CLOSE")
-        close_btn.setObjectName("cancel")
+        dlg = _Dialog(self, title, f"Steam account {steam_id}", min_width=460,
+                      icon="cloud-upload" if mode == "backup" else "cloud-download")
+        row = hbox(spacing=SP["sm"])
+        result_ic = QLabel()
+        result_ic.setFixedSize(16, 16)
+        result_ic.setPixmap(icons.pixmap("loader-circle", C["accent"], 16))
+        row.addWidget(result_ic, 0, Qt.AlignmentFlag.AlignTop)
+        status_lbl = label("Starting…", "body", wrap=True)
+        row.addWidget(status_lbl, 1)
+        dlg.body.addLayout(row)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        bar.setFixedHeight(6)
+        bar.setTextVisible(False)
+        dlg.body.addWidget(bar)
+        close_btn = dlg.add_button("Close", "primary", on_click=dlg.accept)
         close_btn.setEnabled(False)
-        close_btn.clicked.connect(dlg.accept)
-        btn_row.addStretch()
-        btn_row.addWidget(close_btn)
-        root.addLayout(btn_row)
 
-        # ── Thread → UI signals ───────────────────────────────────────────────
         class _Sig(QObject):
-            progress_msg = Signal(str)
-            finished     = Signal(bool, str)   # ok, summary_message
+            progress = Signal(str)
+            finished = Signal(bool, str)
 
         sig = _Sig()
-        sig.progress_msg.connect(lambda m: status_lbl.setText(m))
-        sig.finished.connect(lambda ok, msg: (
-            status_lbl.setText(msg),
-            progress.setRange(0, 1),
-            progress.setValue(1),
-            close_btn.setEnabled(True),
-        ))
+        sig.progress.connect(status_lbl.setText)
 
-        # ── Worker ────────────────────────────────────────────────────────────
+        def _on_finished(ok, msg):
+            status_lbl.setText(msg)
+            result_ic.setPixmap(icons.pixmap("circle-check" if ok else "circle-x",
+                                             C["green"] if ok else C["red"], 16))
+            bar.setRange(0, 1)
+            bar.setValue(1)
+            close_btn.setEnabled(True)
+            self._notify(f"[Drive] {msg.splitlines()[0]}", "success" if ok else "error")
+        sig.finished.connect(_on_finished)
+
         def _work():
             try:
-                result = download_all(
-                    on_progress=lambda m: sig.progress_msg.emit(m))
-                downloaded = result.get("downloaded", 0)
-                synced     = result.get("synced", 0)
-                errors     = result.get("errors", [])
-
-                parts = []
-                if downloaded:
-                    parts.append(f"✓ {downloaded} file(s) downloaded")
+                if mode == "backup":
+                    r = backup_grid(steam_id, on_progress=sig.progress.emit)
+                    if r["ok"]:
+                        mb = r["bytes"] / 1024 / 1024
+                        sig.finished.emit(True,
+                            f"Backed up {r['files']} file(s) ({mb:.1f} MB) to Drive")
+                    else:
+                        sig.finished.emit(False, f"{r['error']}")
                 else:
-                    parts.append("No new files on Drive")
-                if synced:
-                    parts.append(f"{synced} artwork(s) applied to Steam")
-                if errors:
-                    parts.append(f"⚠ {len(errors)} error(s): {errors[0]}")
-
-                ok  = not bool(errors)
-                msg = "  |  ".join(parts)
-                sig.finished.emit(ok, msg)
+                    r = restore_grid(steam_id, on_progress=sig.progress.emit)
+                    if r["ok"]:
+                        sig.finished.emit(True,
+                            f"Restored {r['files']} file(s) into your Steam grid folder.\n"
+                            "Restart Steam to see the artwork.")
+                    else:
+                        sig.finished.emit(False, f"{r['error']}")
             except Exception as e:
-                sig.finished.emit(False, f"❌ Error: {e}")
+                sig.finished.emit(False, f"{e}")
 
         threading.Thread(target=_work, daemon=True).start()
         dlg.exec()
 
     def _check_token_on_startup(self):
-        """
-        On startup:
-        1. Verify token
-        2. If valid + Drive linked → download exports from Drive
-        3. Apply any downloaded covers to Steam automatically
-        """
+        """Verify the saved PimpMySteam token in the background and show who we are."""
         from app.services.steamkustom_auth import get_token
         token = get_token()
         if not token:
@@ -1233,118 +931,85 @@ class MainWindow(QMainWindow):
         import threading
 
         class _Sig(QObject):
-            status  = Signal(str)
-            done    = Signal(bool, object)
+            status = Signal(str)
 
         sig = _Sig()
-        sig.status.connect(lambda m: self._status_label.setText(m))
+        sig.status.connect(self._status_label.setText)
 
         def _run():
             try:
                 from app.services.steamkustom_auth import verify_token
                 user = verify_token(token)
-                if not user:
+                if user:
+                    sig.status.emit(f"[Drive] Connected as {user.get('username', '')}")
+                else:
                     sig.status.emit("[Drive] Token saved but could not verify")
-                    return
-
-                name = user.get("username", "")
-                sig.status.emit(f"[Drive] ✓ {name} — checking Drive…")
-
-                # Download new exports from Drive
-                try:
-                    from app.services.drive_sync import is_authenticated, download_all
-                    if is_authenticated():
-                        result = download_all(
-                            on_progress=lambda m: sig.status.emit(f"[Drive] {m}")
-                        )
-                        dl = result.get("downloaded", 0)
-                        if dl > 0:
-                            sig.status.emit(
-                                f"[Drive] ✓ {name} — {dl} file{'s' if dl != 1 else ''} synced from Drive")
-                            # Apply downloaded covers to Steam
-                            QTimer.singleShot(500, self, self._apply_covers_to_steam)
-                        else:
-                            sig.status.emit(f"[Drive] ✓ {name} — up to date")
-                    else:
-                        sig.status.emit(
-                            f"[Drive] ✓ {name} — Google Drive not linked "
-                            f"(connect at pimpmysteam.com)")
-                except Exception as e:
-                    sig.status.emit(f"[Drive] ✓ {name} — Drive sync error: {e}")
-
             except Exception as e:
                 sig.status.emit(f"[Drive] Startup check error: {e}")
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _apply_covers_to_steam(self):
-        """
-        After downloading from Drive, apply covers to Steam grid folder.
-        Reads steam_id from preferences and copies exported files.
-        """
-        try:
-            import shutil
-            from pathlib import Path
-            from app.config import EXPORT_FOLDER
-            from app.services.steamkustom_auth import verify_token, get_token
-
-            token = get_token()
-            if not token:
-                return
-
-            user = verify_token(token)
-            steam_id = user.get("steam_id") if user else None
-            if not steam_id:
-                return  # Steam not linked
-
-            # Find Steam grid folder
-            import sys
-            if sys.platform == "darwin":
-                steam_base = Path.home() / "Library/Application Support/Steam/userdata"
-            elif sys.platform == "win32":
-                steam_base = Path.home() / "AppData/Roaming/Steam/userdata"
-            else:
-                steam_base = Path.home() / ".steam/steam/userdata"
-
-            grid_dir = steam_base / str(steam_id) / "config" / "grid"
-            if not grid_dir.exists():
-                return  # Steam not installed or wrong ID
-
-            export_dir = Path(EXPORT_FOLDER)
-            if not export_dir.exists():
-                return
-
-            copied = 0
-            for f in export_dir.rglob("*"):
-                if f.suffix.lower() in {".png", ".jpg", ".jpeg"}:
-                    dest = grid_dir / f.name
-                    if not dest.exists():
-                        shutil.copy2(f, dest)
-                        copied += 1
-
-            if copied > 0:
-                self._status_label.setText(
-                    f"[Drive] ✓ {copied} cover{'s' if copied != 1 else ''} applied to Steam")
-        except Exception as e:
-            print(f"[Drive] Apply covers error: {e}")
-
     def _open_drive_status(self):
-        """Cloud Sync → Sync Status."""
-        from app.services.drive_sync import get_status
-        s = get_status()
-        if not s["configured"]:
-            msg = "No token found. Go to Edit → Preferences to add your PimpMySteam token."
-        elif s["authenticated"]:
-            msg = "✓ Connected to Google Drive"
-        else:
-            msg = "Not connected. Use Cloud Sync → Connect Google Account."
-        from PySide6.QtWidgets import QMessageBox
-        box = QMessageBox(self)
-        box.setWindowTitle("Drive Sync Status")
-        box.setText(msg)
-        box.setStyleSheet("QMessageBox { background:#080a0e; color:#c8d8e8; font-family:'Courier New'; }"
-                          "QLabel { color:#c8d8e8; } QPushButton { min-width:80px; }")
-        box.exec()
+        """Cloud Sync → Backup Status — lists the backup ZIPs on Drive."""
+        import threading
+        from app.services.drive_sync import is_configured, is_authenticated, list_backups
+
+        dlg = _Dialog(self, "Backup status", "Backups of your Steam grid folder stored on Google Drive "
+                      "through PimpMySteam.", min_width=500, icon="cloud")
+        head = hbox(spacing=SP["sm"])
+        state_ic = QLabel()
+        state_ic.setFixedSize(16, 16)
+        state_ic.setPixmap(icons.pixmap("loader-circle", C["accent"], 16))
+        head.addWidget(state_ic, 0, Qt.AlignmentFlag.AlignTop)
+        state_lbl = label("Checking Drive…", "body", wrap=True)
+        head.addWidget(state_lbl, 1)
+        dlg.body.addLayout(head)
+
+        rows_w = QWidget()
+        rows = grid(rows_w, h=SP["lg"], v=SP["xs"])
+        rows_w.setVisible(False)
+        dlg.body.addWidget(rows_w)
+        dlg.add_button("OK", "primary", on_click=dlg.accept)
+
+        class _Sig(QObject):
+            done = Signal(bool, str, list)
+        sig = _Sig()
+
+        def _show(ok: bool, text: str, backups: list):
+            state_lbl.setText(text)
+            state_ic.setPixmap(icons.pixmap("circle-check" if ok else "circle-x",
+                                            C["green"] if ok else C["red"], 16))
+            if backups:
+                for c, t in enumerate(("Steam account", "Size", "Modified (UTC)")):
+                    rows.addWidget(label(t, "eyebrow"), 0, c)
+                for r, b in enumerate(backups, start=1):
+                    when = b["modified"][:16].replace("T", " ")
+                    rows.addWidget(label(str(b["steam_id"]), "mono"), r, 0)
+                    rows.addWidget(label(f"{b['size'] / 1024 / 1024:.1f} MB", "mono"), r, 1)
+                    rows.addWidget(label(when, "dim"), r, 2)
+                rows.setColumnStretch(2, 1)
+                rows_w.setVisible(True)
+        sig.done.connect(_show)
+
+        def _run():
+            try:
+                if not is_configured():
+                    sig.done.emit(False, "No token found.\nCloud Sync → Connect via PimpMySteam…", [])
+                    return
+                if not is_authenticated():
+                    sig.done.emit(False, "Token saved, but Google Drive is not linked.\n"
+                                         "Link it at pimpmysteam.com → Settings.", [])
+                    return
+                backups = list_backups()
+                if not backups:
+                    sig.done.emit(True, "Connected to Google Drive — no backups yet.", [])
+                    return
+                sig.done.emit(True, f"Connected to Google Drive — {len(backups)} backup(s).", list(backups))
+            except Exception as e:
+                sig.done.emit(False, f"Error: {e}", [])
+
+        threading.Thread(target=_run, daemon=True).start()
+        dlg.exec()
 
     # ── File handlers ─────────────────────────────────────────────────────────
 
@@ -1359,7 +1024,7 @@ class MainWindow(QMainWindow):
         tab = self.tab_manager.current_tab()
         tab.preview_canvas.add_image_layer(path, name=os.path.basename(path))
         tab.editor_panel._refresh_layer_list()
-        self._status_label.setText(f"Added layer: {os.path.basename(path)}")
+        self._notify(f"Added layer: {os.path.basename(path)}", "info")
 
     def _export_all_assets(self):
         """File → Export All Assets — confirms AppID once then exports all 5 templates."""
@@ -1414,7 +1079,7 @@ class MainWindow(QMainWindow):
 
     def _import_texture_files(self):
         """File → Import Textures → Import Texture Files."""
-        from app.config import TEXTURES_DIR
+        from app.config import USER_TEXTURES_DIR as TEXTURES_DIR
         import shutil
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Import Texture Files", "",
@@ -1428,12 +1093,12 @@ class MainWindow(QMainWindow):
             dst = os.path.join(TEXTURES_DIR, os.path.basename(src))
             if src != dst:
                 shutil.copy2(src, dst); copied += 1
-        self._status_label.setText(f"Imported {copied} texture(s) to {TEXTURES_DIR}")
+        self._notify(f"Imported {copied} texture(s) to {TEXTURES_DIR}", "success")
 
     def _open_textures_folder(self):
         """File → Import Textures → Open Textures Folder."""
         import subprocess, sys
-        from app.config import TEXTURES_DIR
+        from app.config import USER_TEXTURES_DIR as TEXTURES_DIR
         os.makedirs(TEXTURES_DIR, exist_ok=True)
         if sys.platform == "win32":
             os.startfile(TEXTURES_DIR)
@@ -1456,12 +1121,11 @@ class MainWindow(QMainWindow):
         tab.editor_panel._delete_selected_layer()
 
     def _open_preferences(self):
-        """Edit → Preferences — paths, cache management, performance options."""
-        from PySide6.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-            QLineEdit, QPushButton, QCheckBox, QFrame, QSpacerItem, QSizePolicy
-        )
+        """Edit → Preferences — paths, cache management, account, AppID registry."""
         from app.config import EXPORT_FOLDER, CACHE_FOLDER, DATA_DIR
+        from app.config import USER_FONTS_DIR, USER_TEXTURES_DIR
+        from app.services.steamSync import find_steam_userdata
+        from app.services.steamkustom_auth import get_token, save_token, verify_async
         import json, shutil
 
         PREFS_FILE = os.path.join(DATA_DIR, "preferences.json")
@@ -1476,74 +1140,124 @@ class MainWindow(QMainWindow):
             with open(PREFS_FILE, "w") as f:
                 json.dump(prefs, f, indent=2)
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Preferences")
-        dlg.setMinimumWidth(520)
-        dlg.setStyleSheet("""
-            QDialog { background:#111118; color:#ccc; font-family:'Courier New'; font-size:13px; }
-            QLabel  { color:#aaa; }
-            QLabel#section { color:#3a6e3a; font-size:11px; letter-spacing:2px; padding-top:10px; }
-            QLineEdit { background:#1a1a22; border:1px solid #2a2a3a; color:#aaa;
-                        padding:5px 8px; border-radius:2px; }
-            QPushButton { background:#1a1a28; border:1px solid #333; color:#aaa;
-                          padding:6px 14px; border-radius:2px; font-size:12px; }
-            QPushButton:hover { background:#222238; color:#ddd; border-color:#5566aa; }
-            QPushButton#danger { border-color:#6e3a3a; color:#cc8888; }
-            QPushButton#danger:hover { background:#2e1a1a; color:#ffaaaa; }
-            QCheckBox { color:#aaa; }
-            QCheckBox::indicator { width:14px; height:14px;
-                                   border:1px solid #444; background:#1a1a22; }
-            QCheckBox::indicator:checked { background:#3a6e3a; border-color:#55aa55; }
-            QFrame#line { background:#222232; max-height:1px; }
-        """)
+        dlg = _Dialog(self, "Preferences", "", min_width=600, icon="settings")
+        dlg.setMinimumHeight(600)
 
-        root = QVBoxLayout(dlg)
-        root.setSpacing(6)
-        root.setContentsMargins(24, 18, 24, 18)
+        # Sections live in a scroll area so the dialog never outgrows a 650 px screen
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        col = vbox(inner, (0, 0, SP["xs"], 0), SP["md"])
+        scroll.setWidget(inner)
+        dlg.body.addWidget(scroll, 1)
 
-        def _section(text):
-            lbl = QLabel(text); lbl.setObjectName("section"); return lbl
+        def _path_field(text: str) -> QLineEdit:
+            e = QLineEdit(text)
+            e.setReadOnly(True)
+            e.setCursorPosition(0)
+            return e
 
-        def _hline():
-            f = QFrame(); f.setObjectName("line"); f.setFrameShape(QFrame.HLine); return f
+        # ── STEAM FOLDER ──────────────────────────────────────────────────
+        sec = Section("Steam folder", collapsible=False)
+        sec.body.addWidget(label("Steam userdata folder used by Sync to Steam. Auto-detected; "
+                                 "set it manually if detection fails.", "dim", wrap=True))
+        g = grid(h=SP["md"], v=SP["sm"])
+        steam_edit = _path_field(find_steam_userdata() or "")
+        steam_edit.setPlaceholderText("Not found")
 
-        def _folder_row(label_text, path_value, on_browse):
-            lbl = QLabel(label_text)
-            row = QHBoxLayout()
-            edit = QLineEdit(path_value)
-            edit.setReadOnly(True)
-            btn  = QPushButton("Browse…")
-            btn.setFixedWidth(90)
-            btn.clicked.connect(lambda: on_browse(edit))
-            row.addWidget(edit, 1)
-            row.addWidget(btn)
-            return lbl, row
+        def _locate():
+            self._locate_steam_folder()
+            steam_edit.setText(find_steam_userdata() or "")
+            steam_edit.setCursorPosition(0)
+        _form_row(g, 0, "userdata", steam_edit, Button("Locate…", icon="folder-open", on_click=_locate))
+        sec.body.addLayout(g)
+        col.addWidget(sec)
 
-        # ── PATHS ─────────────────────────────────────────────────────────
-        root.addWidget(_section("PATHS"))
+        # ── PIMPMYSTEAM ACCOUNT ───────────────────────────────────────────
+        sec = Section("PimpMySteam account", collapsible=False)
+        sec.body.addWidget(label("Generate a token at pimpmysteam.com → Settings → Apps and paste it "
+                                 "here to enable Google Drive sync.", "dim", wrap=True))
+        g = grid(h=SP["md"], v=SP["sm"])
+        sk_token_edit = QLineEdit()
+        sk_token_edit.setPlaceholderText("Paste your app token from pimpmysteam.com…")
+        sk_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        sk_verify_btn = Button("Verify", icon="shield-check")
+        _form_row(g, 0, "App token", sk_token_edit, sk_verify_btn)
 
-        def _browse_export(edit_w):
-            p = QFileDialog.getExistingDirectory(dlg, "Select Export Folder", EXPORT_FOLDER)
-            if p:
-                prefs["export_folder"] = p
-                edit_w.setText(p)
-                _save_prefs()
-                self._status_label.setText(f"Export folder set: {p}")
+        sk_row = hbox(spacing=SP["sm"])
+        sk_ic = QLabel()
+        sk_ic.setFixedSize(16, 16)
+        sk_status = label("Not connected", "dim", elide=True)
+        sk_row.addWidget(sk_ic)
+        sk_row.addWidget(sk_status, 1)
+        _form_row(g, 1, "Status", sk_row)
+        sec.body.addLayout(g)
 
-        lbl_e, row_e = _folder_row(
-            "Export Folder",
-            prefs.get("export_folder", EXPORT_FOLDER),
-            _browse_export,
-        )
-        root.addWidget(lbl_e); root.addLayout(row_e)
+        def _sk_set(text, tone, icon_name, color):
+            sk_status.setText(text)
+            kit.set_tone(sk_status, tone)
+            sk_ic.setPixmap(icons.pixmap(icon_name, color, 16))
 
-        root.addWidget(_hline())
+        saved = get_token() or ""
+        if saved:
+            sk_token_edit.setText(saved)
+            _sk_set("Token saved", "green", "circle-check", C["green"])
+        else:
+            _sk_set("Not connected", None, "circle-dot", C["text_muted"])
+
+        def _verify_token():
+            token = sk_token_edit.text().strip()
+            if not token:
+                _sk_set("Enter a token first", "gold", "triangle-alert", C["gold"])
+                return
+            sk_verify_btn.set_loading(True)
+            _sk_set("Verifying…", "accent", "loader-circle", C["accent"])
+
+            def _done(ok, user):
+                def _upd():
+                    sk_verify_btn.set_loading(False)
+                    if ok and user:
+                        username = user.get("username", "Connected")
+                        if save_token(token):
+                            _sk_set(f"Connected as {username}", "green", "circle-check", C["green"])
+                        else:
+                            _sk_set("Valid token but could not save it (check write permissions in data folder)",
+                                    "red", "circle-x", C["red"])
+                    else:
+                        _sk_set("Invalid token — generate one at pimpmysteam.com", "red", "circle-x", C["red"])
+                # Runs in the verify thread — hand the update to the GUI thread
+                QTimer.singleShot(0, dlg, _upd)
+
+            verify_async(token, _done)
+
+        sk_verify_btn.clicked.connect(_verify_token)
+        sec.body.addWidget(Button("Open pimpmysteam.com → Settings → Apps", "link", icon="external-link",
+                                  on_click=lambda: __import__("webbrowser").open("https://pimpmysteam.com/settings")),
+                           0, Qt.AlignmentFlag.AlignLeft)
+        stats_cb = QCheckBox("Send anonymous usage count to PimpMySteam")
+        stats_cb.setToolTip("Only the number of artworks applied is sent — nothing else.")
+        stats_cb.setChecked(bool(prefs.get("send_usage_stats", False)))
+        stats_cb.stateChanged.connect(
+            lambda v: prefs.update({"send_usage_stats": bool(v)}) or _save_prefs())
+        sec.body.addWidget(stats_cb)
+        col.addWidget(sec)
+
+        # ── APPID REGISTRY ────────────────────────────────────────────────
+        sec = Section("AppID registry", collapsible=False)
+        sec.body.addWidget(label("Game name → AppID pairs remembered from previous exports. "
+                                 "Remove an entry if the wrong game was picked.", "dim", wrap=True))
+        sec.body.addWidget(Button("Manage AppID mappings…", icon="list",
+                                  on_click=lambda: self._open_appid_registry(dlg)),
+                           0, Qt.AlignmentFlag.AlignLeft)
+        col.addWidget(sec)
 
         # ── CACHE ─────────────────────────────────────────────────────────
-        root.addWidget(_section("CACHE"))
-
-        cache_size_lbl = QLabel("Calculating…")
-        cache_size_lbl.setStyleSheet("color:#555; font-size:11px;")
+        sec = Section("Cache", collapsible=False)
+        g = grid(h=SP["md"], v=SP["sm"])
+        cache_edit = _path_field(str(CACHE_FOLDER))
+        cache_size_lbl = label("Calculating…", "mono")
+        cache_size_lbl.setMinimumWidth(80)
 
         def _update_cache_size():
             try:
@@ -1552,142 +1266,91 @@ class MainWindow(QMainWindow):
                     for dp, _, files in os.walk(CACHE_FOLDER)
                     for f in files
                 )
-                mb = total / (1024 * 1024)
-                cache_size_lbl.setText(f"Cache size: {mb:.1f} MB  ({CACHE_FOLDER})")
+                cache_size_lbl.setText(f"{total / (1024 * 1024):.1f} MB")
             except Exception:
-                cache_size_lbl.setText(f"Cache: {CACHE_FOLDER}")
+                cache_size_lbl.setText("—")
 
         _update_cache_size()
-        root.addWidget(cache_size_lbl)
-
-        cache_row = QHBoxLayout()
-        clear_cache_btn = QPushButton("Clear Cache")
-        clear_cache_btn.setObjectName("danger")
-        clear_cache_btn.setFixedWidth(120)
+        _form_row(g, 0, "Folder", cache_edit)
+        clear_cache_btn = Button("Clear cache", "danger", icon="trash")
 
         def _clear_cache():
             try:
                 shutil.rmtree(CACHE_FOLDER, ignore_errors=True)
                 os.makedirs(CACHE_FOLDER, exist_ok=True)
                 _update_cache_size()
-                self._status_label.setText("Cache cleared.")
+                self._notify("Cache cleared.", "success")
             except Exception as e:
                 QMessageBox.warning(dlg, "Error", str(e))
 
         clear_cache_btn.clicked.connect(_clear_cache)
-        cache_row.addWidget(clear_cache_btn)
-        cache_row.addStretch()
-        root.addLayout(cache_row)
+        _form_row(g, 1, "Size", cache_size_lbl, clear_cache_btn)
+        sec.body.addLayout(g)
+        col.addWidget(sec)
 
-        root.addWidget(_hline())
+        # ── FOLDERS ───────────────────────────────────────────────────────
+        sec = Section("Fonts & textures folders", collapsible=False)
+        g = grid(h=SP["md"], v=SP["sm"])
+        _form_row(g, 0, "Exports", _path_field(str(EXPORT_FOLDER)),
+                  Button("Open", icon="folder-open", on_click=self._open_exports_folder))
+        _form_row(g, 1, "Fonts", _path_field(str(USER_FONTS_DIR)),
+                  Button("Open", icon="folder-open", on_click=self._open_fonts_folder))
+        _form_row(g, 2, "Textures", _path_field(str(USER_TEXTURES_DIR)),
+                  Button("Open", icon="folder-open", on_click=self._open_textures_folder))
+        sec.body.addLayout(g)
+        col.addWidget(sec)
+        col.addStretch()
 
-        # ── PERFORMANCE ────────────────────────────────────────────────────
-        root.addWidget(_section("PERFORMANCE"))
-
-        hw_cb = QCheckBox("Enable hardware acceleration (requires restart)")
-        hw_cb.setChecked(prefs.get("hw_accel", True))
-        hw_cb.stateChanged.connect(lambda v: prefs.update({"hw_accel": bool(v)}) or _save_prefs())
-        root.addWidget(hw_cb)
-
-        compose_cb = QCheckBox("High-quality compose (slower, better output)")
-        compose_cb.setChecked(prefs.get("hq_compose", False))
-        compose_cb.stateChanged.connect(lambda v: prefs.update({"hq_compose": bool(v)}) or _save_prefs())
-        root.addWidget(compose_cb)
-
-        root.addWidget(_hline())
-
-        # ── PIMPMYSTEAM ACCOUNT ────────────────────────────────────────────
-        root.addWidget(_section("PIMPMYSTEAM ACCOUNT"))
-
-        sk_desc = QLabel(
-            "Generate a token at pimpmysteam.com → Settings → Apps.\n"
-            "Paste it here to enable Google Drive sync automatically."
-        )
-        sk_desc.setStyleSheet("color:#607080; font-size:11px; line-height:1.5;")
-        sk_desc.setWordWrap(True)
-        root.addWidget(sk_desc)
-
-        # Status label
-        sk_status = QLabel("")
-        sk_status.setStyleSheet("font-size:11px; color:#404a5a;")
-        root.addWidget(sk_status)
-
-        # Token row
-        from app.services.steamkustom_auth import get_token, save_token, verify_async
-        sk_row = QHBoxLayout()
-        sk_token_edit = QLineEdit()
-        sk_token_edit.setPlaceholderText("Paste your app token from pimpmysteam.com…")
-        sk_token_edit.setEchoMode(QLineEdit.Password)
-        saved = get_token() or ""
-        if saved:
-            sk_token_edit.setText(saved)
-            sk_status.setText("● Token saved")
-            sk_status.setStyleSheet("font-size:11px; color:#4ade80;")
-        sk_row.addWidget(sk_token_edit, 1)
-
-        sk_verify_btn = QPushButton("Verify")
-        sk_verify_btn.setFixedWidth(80)
-        sk_row.addWidget(sk_verify_btn)
-        root.addLayout(sk_row)
-
-        def _verify_token():
-            token = sk_token_edit.text().strip()
-            if not token:
-                sk_status.setText("Enter a token first")
-                sk_status.setStyleSheet("font-size:11px; color:#fbbf24;")
-                return
-            sk_verify_btn.setEnabled(False)
-            sk_status.setText("Verifying…")
-            sk_status.setStyleSheet("font-size:11px; color:#60a5fa;")
-
-            def _done(ok, user):
-                from PySide6.QtCore import QTimer
-                def _upd():
-                    sk_verify_btn.setEnabled(True)
-                    if ok and user:
-                        save_token(token)
-                        prefs["steamkustom_token"] = token
-                        _save_prefs()
-                        username = user.get("username", "Connected")
-                        sk_status.setText(f"✓ Connected as {username}")
-                        sk_status.setStyleSheet("font-size:11px; color:#4ade80;")
-                    else:
-                        sk_status.setText("✗ Invalid token — generate one at pimpmysteam.com")
-                        sk_status.setStyleSheet("font-size:11px; color:#f87171;")
-                QTimer.singleShot(0, _upd)
-
-            verify_async(token, _done)
-
-        sk_verify_btn.clicked.connect(_verify_token)
-
-        sk_link = QLabel('<a href="https://pimpmysteam.com/settings" style="color:#60a5fa;">pimpmysteam.com → Settings → Apps → Generate Token</a>')
-        sk_link.setOpenExternalLinks(True)
-        sk_link.setStyleSheet("font-size:10px;")
-        root.addWidget(sk_link)
-
-        root.addWidget(_hline())
-
-        # ── BUTTONS ────────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(90)
-        close_btn.clicked.connect(dlg.accept)
-        btn_row.addWidget(close_btn)
-        root.addLayout(btn_row)
-
+        dlg.add_button("Close", "primary", on_click=dlg.accept)
         dlg.exec()
 
     # ── Brushes handlers ───────────────────────────────────────────────────────
 
 
+    def _open_appid_registry(self, parent=None):
+        """Preferences → Manage AppID mappings: list + remove entries."""
+        from app.services.appIdRegistry import AppIdRegistry
+        reg = AppIdRegistry.shared()
+
+        dlg = _Dialog(parent or self, "AppID mappings",
+                      "Searched name → Steam game [AppID]. Remove an entry to be asked again on the next export.",
+                      min_width=520, icon="list")
+        dlg.setMinimumHeight(400)
+        lst = QListWidget()
+        dlg.body.addWidget(lst, 1)
+        empty = kit.EmptyState("list", "No AppID mappings yet", "They are remembered after each export.")
+        dlg.body.addWidget(empty)
+
+        def _fill():
+            lst.clear()
+            for key, entry in sorted(reg.all_entries().items()):
+                lst.addItem(f"{key}  →  {entry.get('canonical', key)}  [{entry.get('id')}]")
+                lst.item(lst.count() - 1).setData(Qt.ItemDataRole.UserRole, key)
+            has = lst.count() > 0
+            lst.setVisible(has)
+            empty.setVisible(not has)
+        _fill()
+
+        def _remove():
+            for it in lst.selectedItems():
+                reg.remove(it.data(Qt.ItemDataRole.UserRole))
+            # forget it in every open tab too, so the next export re-asks
+            for t in self.tab_manager.tabs():
+                if reg.lookup(t.state.selected_game_name or "") is None:
+                    t.state.confirmed_app_id = None
+            _fill()
+        rm = Button("Remove selected", "danger", icon="trash", on_click=_remove)
+        dlg.buttons.insertWidget(0, rm)
+        dlg.add_button("Close", "primary", on_click=dlg.accept)
+        dlg.exec()
+
     def _reload_font_library(self):
         """Fonts → Reload Font Library — re-scans fonts folder and refreshes combo."""
-        from app.config import FONTS_DIR
+        from app.config import font_dirs
         from app.ui.fontImporter import register_all_fonts
-        n = register_all_fonts(FONTS_DIR)
+        n = sum(register_all_fonts(d) for d in font_dirs())
         self._refresh_font_combo()
-        self._status_label.setText(f"Font library reloaded — {n} families registered.")
+        self._notify(f"Font library reloaded — {n} families registered.", "success")
 
     # ── Sync to Steam handlers ─────────────────────────────────────────────────
 
@@ -1708,7 +1371,7 @@ class MainWindow(QMainWindow):
         try:
             with open(override_file, "w") as f:
                 json.dump({"userdata": path}, f)
-            self._status_label.setText(f"Steam folder set to: {path}")
+            self._notify(f"Steam folder set to: {path}", "success")
             QMessageBox.information(self, "Steam Folder Set",
                                     f"Steam userdata folder set to:\n{path}\n\n"
                                     "This will be used for all future Sync operations.")
@@ -1736,212 +1399,197 @@ class MainWindow(QMainWindow):
 
     def _show_api_key_help(self):
         """Help → Getting SteamGridDB API Key."""
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
-        from PySide6.QtCore import Qt
         import webbrowser
+        url = "https://www.steamgriddb.com/profile/preferences/api"
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Getting Your SteamGridDB API Key")
-        dlg.setMinimumWidth(460)
-        dlg.setStyleSheet("background:#111118; color:#ccc; font-family:'Courier New'; font-size:13px;")
-        root = QVBoxLayout(dlg)
-        root.setSpacing(10)
-        root.setContentsMargins(24, 20, 24, 20)
+        dlg = _Dialog(self, "SteamGridDB API key",
+                      "Artwork search uses the SteamGridDB API. The key is free and stored locally — "
+                      "it is never shared.", min_width=500, icon="key-round")
+        steps = [
+            "Open the SteamGridDB API page (button below).",
+            "Log in or create a free account.",
+            "Click Generate API Key and copy it.",
+            "In Steam Grunge Editor, click Set API Key in the search panel (top left) and paste it.",
+        ]
+        g = grid(h=SP["md"], v=SP["sm"])
+        for i, text in enumerate(steps):
+            num = label(f"{i + 1}.", "value")
+            num.setFixedWidth(22)
+            g.addWidget(num, i, 0, Qt.AlignmentFlag.AlignTop)
+            g.addWidget(label(text, "body", wrap=True), i, 1)
+        g.setColumnStretch(1, 1)
+        dlg.body.addLayout(g)
+        dlg.body.addWidget(label(url, "mono", tone="accent", elide=True))
 
-        title = QLabel("HOW TO GET YOUR STEAMGRIDDB API KEY")
-        title.setStyleSheet("color:#88cc88; font-size:14px; font-weight:bold; letter-spacing:1px;")
-        root.addWidget(title)
-
-        steps = QLabel(
-            "1.  Go to:\n"
-            "    https://www.steamgriddb.com/profile/preferences/api\n\n"
-            "2.  Log in or create a free account.\n\n"
-            "3.  Click  Generate API Key.\n\n"
-            "4.  Copy the key.\n\n"
-            "5.  In Steam Grunge Editor, click  Set API Key\n"
-            "    in the search panel (top left) and paste it."
-        )
-        steps.setStyleSheet("color:#aaa; font-size:13px; line-height:160%;")
-        steps.setWordWrap(True)
-        root.addWidget(steps)
-
-        note = QLabel("Your key is stored locally and never shared.")
-        note.setStyleSheet("color:#555; font-size:11px;")
-        root.addWidget(note)
-
-        btn_row = QVBoxLayout()
-        open_btn = QPushButton("Open SteamGridDB API Page")
-        open_btn.setStyleSheet("background:#1a2e1a; border:1px solid #3a6e3a; color:#88cc88; padding:8px 16px;")
-        open_btn.clicked.connect(lambda: webbrowser.open(
-            "https://www.steamgriddb.com/profile/preferences/api"))
-        btn_row.addWidget(open_btn)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dlg.accept)
-        btn_row.addWidget(close_btn)
-        root.addLayout(btn_row)
+        dlg.add_button("Close", on_click=dlg.accept)
+        dlg.add_button("Open SteamGridDB API page", "primary", icon="external-link",
+                       on_click=lambda: webbrowser.open(url))
         dlg.exec()
 
     def _show_quickstart(self):
         """Help → Quick Start Tutorial."""
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QScrollArea, QWidget
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Quick Start Tutorial")
-        dlg.setMinimumSize(500, 480)
-        dlg.setStyleSheet("background:#111118; color:#ccc; font-family:'Courier New'; font-size:13px;")
-        root = QVBoxLayout(dlg)
-        root.setContentsMargins(0, 0, 0, 12)
+        dlg = _Dialog(self, "Quick start", "Seven steps from an empty canvas to custom artwork in your "
+                      "Steam library.", min_width=540, icon="zap")
+        dlg.setMinimumHeight(520)
 
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border:none; background:#111118;")
-        inner = QWidget(); inner.setStyleSheet("background:#111118;")
-        il = QVBoxLayout(inner); il.setContentsMargins(24, 20, 24, 10); il.setSpacing(10)
-
-        title = QLabel("✦  QUICK START GUIDE")
-        title.setStyleSheet("color:#88cc88; font-size:15px; font-weight:bold; letter-spacing:2px;")
-        il.addWidget(title)
-
-        steps_text = (
-            "<b style='color:#ddd'>Step 1 — Set your API Key</b><br>"
-            "Click  <i>Set API Key</i>  in the top-left search panel.<br>"
-            "Paste your SteamGridDB key (Help → Getting SteamGridDB API Key).<br><br>"
-            "<b style='color:#ddd'>Step 2 — Search for a game</b><br>"
-            "Type a game name and press  Search.<br>"
-            "Select the game from the results list.<br><br>"
-            "<b style='color:#ddd'>Step 3 — Pick artwork</b><br>"
-            "Click any artwork thumbnail to add it as a canvas layer.<br>"
-            "Use the Type filter (Grids / Heroes / Logos / Icons) to switch artwork types.<br><br>"
-            "<b style='color:#ddd'>Step 4 — Choose a template</b><br>"
-            "In the right panel, select the template you want to create:<br>"
-            "Cover, Wide Cover, Hero, Logo, or Icon.<br><br>"
-            "<b style='color:#ddd'>Step 5 — Apply effects</b><br>"
-            "Use the Film Grain, Chromatic Aberration, and Color sliders<br>"
-            "to add a distressed / grunge look.<br><br>"
-            "<b style='color:#ddd'>Step 6 — Export</b><br>"
-            "File → Export (Ctrl+E) to save a single asset,  or<br>"
-            "File → Export All Assets (Ctrl+Shift+E) for all formats at once.<br><br>"
-            "<b style='color:#ddd'>Step 7 — Sync to Steam</b><br>"
-            "Use the  Sync to Steam  menu to copy files into your<br>"
-            "Steam custom artwork folder.  Restart Steam to see them."
-        )
-        lbl = QLabel(steps_text)
-        lbl.setTextFormat(Qt.RichText)
-        lbl.setWordWrap(True)
-        lbl.setStyleSheet("color:#aaa; font-size:13px; line-height:170%;")
-        il.addWidget(lbl)
-        il.addStretch()
-
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        col = vbox(inner, (0, 0, SP["sm"], 0), SP["sm"])
         scroll.setWidget(inner)
-        root.addWidget(scroll)
-        close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(100)
-        close_btn.clicked.connect(dlg.accept)
-        root.addWidget(close_btn, 0, Qt.AlignCenter)
+        dlg.body.addWidget(scroll, 1)
+
+        steps = [
+            ("key-round", "Set your API key",
+             "Click Set API Key in the top-left search panel and paste your SteamGridDB key "
+             "(Help → Getting SteamGridDB API Key)."),
+            ("search", "Search for a game",
+             "Type a game name and press Search, then select the game from the results list."),
+            ("image", "Pick artwork",
+             "Click any artwork thumbnail to add it as a canvas layer. Use the Type filter "
+             "(Grids / Heroes / Logos / Icons) to switch artwork types."),
+            ("layout-grid", "Choose a template",
+             "In the right panel, select the template you want to create: Cover, Wide Cover, "
+             "Hero, Logo, or Icon."),
+            ("sliders-horizontal", "Apply effects",
+             "Use the Film Grain, Chromatic Aberration and Color sliders to add a distressed / grunge look."),
+            ("download", "Export",
+             "File → Export (Ctrl+E) saves a single asset; File → Export All Assets (Ctrl+Shift+E) "
+             "saves every format at once."),
+            ("upload", "Sync to Steam",
+             "Use the Sync to Steam menu to copy files into your Steam custom artwork folder. "
+             "Restart Steam to see them."),
+        ]
+        for i, (ic, title, text) in enumerate(steps):
+            card = kit.Section(f"Step {i + 1} — {title}", collapsible=False)
+            row = hbox(spacing=SP["md"])
+            pic = QLabel()
+            pic.setPixmap(icons.pixmap(ic, C["accent"], 20))
+            pic.setFixedSize(24, 24)
+            row.addWidget(pic, 0, Qt.AlignmentFlag.AlignTop)
+            row.addWidget(label(text, "body", wrap=True), 1)
+            card.body.addLayout(row)
+            col.addWidget(card)
+        col.addStretch()
+
+        dlg.add_button("Close", "primary", on_click=dlg.accept)
         dlg.exec()
 
     def _show_shortcuts(self):
         """Help → Keyboard Shortcuts."""
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Keyboard Shortcuts")
-        dlg.setMinimumWidth(420)
-        dlg.setStyleSheet("background:#111118; color:#ccc; font-family:'Courier New'; font-size:13px;")
-        root = QVBoxLayout(dlg)
-        root.setContentsMargins(24, 20, 24, 16)
-        root.setSpacing(4)
-
-        title = QLabel("KEYBOARD SHORTCUTS")
-        title.setStyleSheet("color:#88cc88; font-size:14px; font-weight:bold; letter-spacing:2px;")
-        root.addWidget(title)
-        root.addSpacing(8)
+        dlg = _Dialog(self, "Keyboard shortcuts", "", min_width=520, icon="list")
 
         shortcuts = [
             ("FILE", None),
-            ("Ctrl+O",           "Open image"),
+            ("Ctrl+N",           "New project (new tab)"),
+            ("Ctrl+O",           "Open project"),
+            ("Ctrl+S",           "Save project"),
+            ("Ctrl+Shift+S",     "Save project as…"),
             ("Ctrl+Shift+O",     "Import image as layer"),
-            ("Ctrl+E",           "Export artwork"),
+            ("Ctrl+E",           "Export artwork + apply to Steam"),
             ("Ctrl+Shift+E",     "Export all assets"),
+            ("Ctrl+,",           "Preferences"),
             ("Ctrl+Q",           "Quit"),
             ("EDIT", None),
             ("Ctrl+Z",           "Undo"),
-            ("Ctrl+Y",           "Redo"),
+            ("Ctrl+Y / Ctrl+Shift+Z", "Redo"),
             ("Ctrl+D",           "Duplicate layer"),
             ("Delete",           "Delete layer"),
             ("Ctrl+Shift+C",     "Crop layer"),
-            ("BRUSHES", None),
+            ("Arrow keys",       "Nudge layer (Shift = 10 px)"),
             ("SYNC", None),
-            ("Ctrl+Shift+S",     "Sync to Steam"),
+            ("Ctrl+Shift+A",     "Sync to Steam"),
+            ("Ctrl+Shift+U",     "Back up Steam artwork to Drive"),
+            ("Ctrl+Shift+D",     "Restore Steam artwork from Drive"),
             ("TABS", None),
             ("Ctrl+T",           "New tab"),
             ("Ctrl+W",           "Close tab"),
+            ("Ctrl+Tab",         "Next / previous tab"),
         ]
 
+        # Two columns of sections so the dialog stays short
+        groups: list[tuple[str, list]] = []
         for key, desc in shortcuts:
             if desc is None:
-                lbl = QLabel(key)
-                lbl.setStyleSheet("color:#3a6e3a; font-size:11px; letter-spacing:2px; padding-top:8px;")
-                root.addWidget(lbl)
+                groups.append((key, []))
             else:
-                row_w = QLabel(f"  <span style='color:#88aacc; min-width:160px'>{key}</span>"
-                               f"  <span style='color:#888'>{desc}</span>")
-                row_w.setTextFormat(Qt.RichText)
-                root.addWidget(row_w)
+                groups[-1][1].append((key, desc))
 
-        root.addSpacing(10)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dlg.accept)
-        root.addWidget(close_btn)
+        cols = hbox(spacing=SP["lg"])
+        halves = (groups[:2], groups[2:])
+        for half in halves:
+            c = vbox(spacing=SP["md"])
+            for title, rows in half:
+                g = grid(h=SP["md"], v=SP["xs"])
+                g.addWidget(label(title, "section"), 0, 0, 1, 2)
+                for r, (key, desc) in enumerate(rows, start=1):
+                    k = label(key, "mono", tone="accent")
+                    k.setMinimumWidth(150)
+                    g.addWidget(k, r, 0)
+                    g.addWidget(label(desc, "dim"), r, 1)
+                g.setColumnStretch(1, 1)
+                c.addLayout(g)
+            c.addStretch()
+            cols.addLayout(c, 1)
+        dlg.body.addLayout(cols)
+
+        dlg.add_button("Close", "primary", on_click=dlg.accept)
         dlg.exec()
 
-    # ── Project file management ──────────────────────────────────────────────
+    # ── Project file management (state lives on each WorkspaceTab) ──────────
 
     def _mark_dirty(self):
-        """Called whenever canvas layers change — marks project as modified."""
-        self._project_dirty = True
-        self._update_title()
+        """Compatibility shim — tabs mark themselves dirty via their own signals."""
+        self.tab_manager.current_tab().mark_dirty()
 
     def _update_title(self):
-        """Reflect project name + dirty state in the window title."""
-        name  = (os.path.basename(self._project_path)
-                 if self._project_path else "Untitled")
-        dirty = " •" if self._project_dirty else ""
-        self.setWindowTitle(f"Steam Grunge Editor — {name}{dirty}")
+        """Reflect current tab's project name + dirty state in the window title."""
+        tab   = self.tab_manager.current_tab()
+        dirty = " *" if tab.dirty else ""
+        self.setWindowTitle(f"Steam Grunge Editor — {tab.display_name()}{dirty}")
 
-    def _confirm_discard(self) -> bool:
-        """Return True if it is safe to discard unsaved changes."""
-        if not self._project_dirty:
+    def _confirm_discard(self, tab=None) -> bool:
+        """Return True if it is safe to discard unsaved changes of *tab*."""
+        tab = tab or self.tab_manager.current_tab()
+        if not tab.dirty:
             return True
-        from PySide6.QtWidgets import QMessageBox
-        btn = QMessageBox.question(
-            self, "Unsaved Changes",
-            "You have unsaved changes. Discard them?",
-            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
-        )
-        if btn == QMessageBox.Save:
-            self._save_project()
-            return not self._project_dirty   # False if save was itself cancelled
-        return btn == QMessageBox.Discard
+        dlg = _Dialog(self, "Unsaved changes",
+                      f"“{tab.display_name()}” has unsaved changes. Save them before closing?",
+                      min_width=460, icon="triangle-alert")
+        choice = {"v": "cancel"}
+
+        def _pick(v):
+            choice["v"] = v
+            dlg.accept()
+        dlg.add_button("Cancel", on_click=lambda: _pick("cancel"))
+        dlg.add_button("Discard", "danger", icon="trash", on_click=lambda: _pick("discard"))
+        save_btn = dlg.add_button("Save", "primary", icon="save", on_click=lambda: _pick("save"))
+        save_btn.setDefault(True)
+        dlg.exec()
+        if choice["v"] == "save":
+            self._save_project(tab)
+            return not tab.dirty   # False if the save dialog was cancelled
+        return choice["v"] == "discard"
+
+    def _close_tab_requested(self, idx: int):
+        """Tab close button / Ctrl+W — ask before dropping unsaved work."""
+        tabs = self.tab_manager.tabs()
+        if not (0 <= idx < len(tabs)):
+            return
+        if self._confirm_discard(tabs[idx]):
+            self.tab_manager.close_tab(idx)
+            self._update_title()
 
     def _new_project(self):
-        """File → New Project: clear canvas and start fresh."""
-        if not self._confirm_discard():
-            return
-        tab = self.tab_manager.current_tab()
-        # Use public canvas API — never mutate _layers/_sel/_history directly
-        tab.preview_canvas.clear_canvas()
-        from app.state import AppState
-        tab.state.__dict__.update(AppState().__dict__)
-        tab.editor_panel.refresh_from_state()
-        tab.editor_panel._refresh_layer_list()
-        tab.schedule_compose()
-        tab.preview_canvas.update()
-        self._project_path  = ""
-        self._project_dirty = False
+        """File → New Project: a fresh tab (reuses the current one if it is empty)."""
+        cur = self.tab_manager.current_tab()
+        if not cur.is_empty():
+            self.tab_manager.add_tab()
         self._update_title()
 
     def _open_project(self):
         """File → Open Project…"""
-        if not self._confirm_discard():
-            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Project",
             os.path.expanduser("~"),
@@ -1952,74 +1600,81 @@ class MainWindow(QMainWindow):
         self._load_project_from_path(path)
 
     def _load_project_from_path(self, path: str):
-        from PySide6.QtWidgets import QMessageBox
+        # Load into the current tab only if it is untouched; otherwise a new tab
         tab = self.tab_manager.current_tab()
+        if not tab.is_empty():
+            tab = self.tab_manager.add_tab()
         try:
             load_project(tab, path)
-            self._project_path  = path
-            self._project_dirty = False
-            self.tab_manager.rename_current(
-                tab.state.selected_game_name or
-                os.path.splitext(os.path.basename(path))[0])
+            tab.project_path = path
+            tab.mark_clean()
+            tab.set_label(tab.state.selected_game_name or
+                          os.path.splitext(os.path.basename(path))[0])
             self._update_title()
+            self._notify(f"Opened: {os.path.basename(path)}", "success")
         except ProjectIOError as e:
+            self.toasts.show(f"Open failed: {e}", "error")
             QMessageBox.critical(self, "Open Failed", str(e))
 
-    def _save_project(self):
+    def _save_project(self, tab=None):
         """File → Save Project (Ctrl+S)."""
-        if not self._project_path:
-            self._save_project_as()
+        tab = tab or self.tab_manager.current_tab()
+        if not tab.project_path:
+            self._save_project_as(tab)
             return
-        self._write_project(self._project_path)
+        self._write_project(tab, tab.project_path)
 
-    def _save_project_as(self):
+    def _save_project_as(self, tab=None):
         """File → Save Project As… (Ctrl+Shift+S)."""
-        tab  = self.tab_manager.current_tab()
+        tab  = tab or self.tab_manager.current_tab()
         name = tab.state.selected_game_name or "untitled"
         safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip()
         default = os.path.join(os.path.expanduser("~"), f"{safe}{SGEPROJ_EXT}")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Project As",
-            self._project_path or default,
+            tab.project_path or default,
             f"Steam Grunge Editor Projects (*{SGEPROJ_EXT});;All Files (*)",
         )
         if not path:
             return
         if not path.endswith(SGEPROJ_EXT):
             path += SGEPROJ_EXT
-        self._write_project(path)
+        self._write_project(tab, path)
 
-    def _write_project(self, path: str):
-        from PySide6.QtWidgets import QMessageBox
-        tab = self.tab_manager.current_tab()
+    def _write_project(self, tab, path: str):
         try:
             save_project(tab, path)
-            self._project_path  = path
-            self._project_dirty = False
+            tab.project_path = path
+            tab.mark_clean()
+            tab.set_label(tab.state.selected_game_name or
+                          os.path.splitext(os.path.basename(path))[0])
             self._update_title()
-            self.status_bar.showMessage(f"Saved: {os.path.basename(path)}", 4000)
+            self._notify(f"Saved: {os.path.basename(path)}", "success")
         except ProjectIOError as e:
+            self.toasts.show(f"Save failed: {e}", "error")
             QMessageBox.critical(self, "Save Failed", str(e))
 
     def _do_autosave(self):
-        """Fires every 5 min — silently writes autosave if there are unsaved changes."""
-        if not self._project_dirty:
-            return
-        tab = self.tab_manager.current_tab()
-        autosave(tab)
+        """Fires every 5 min — silently writes an autosave for every dirty tab."""
+        for tab in self.tab_manager.tabs():
+            if tab.dirty:
+                autosave(tab)
 
     def closeEvent(self, event):
-        """Prompt to save before quitting."""
-        if self._confirm_discard():
-            # Flush artwork counter to backend before exit
-            try:
-                from app.services.steamSync import _session_artwork_counter
-                _session_artwork_counter.flush()
-            except Exception:
-                pass
-            event.accept()
-        else:
-            event.ignore()
+        """Prompt to save every tab with unsaved changes before quitting."""
+        for tab in self.tab_manager.tabs():
+            if tab.dirty:
+                self.tab_manager.switch_tab(self.tab_manager.index_of(tab))
+                if not self._confirm_discard(tab):
+                    event.ignore()
+                    return
+        # Flush artwork counter to backend before exit
+        try:
+            from app.services.steamSync import _session_artwork_counter
+            _session_artwork_counter.flush()
+        except Exception:
+            pass
+        event.accept()
 
     # ── Update checker ────────────────────────────────────────────────────────
 
@@ -2046,21 +1701,10 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _show_update_banner(self, latest_version: str):
-        from PySide6.QtWidgets import QPushButton
-        btn = QPushButton(
-            f"  ↑  Update available: v{latest_version}  —  click to download  "
-        )
-        btn.setStyleSheet("""
-            QPushButton {
-                background: #1a3a1a; color: #88ee88;
-                border: 1px solid #3a6e3a; border-radius: 3px;
-                font-family: 'Courier New'; font-size: 11px; padding: 2px 8px;
-            }
-            QPushButton:hover { background: #224422; color: #aaffaa; }
-        """)
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.clicked.connect(self._open_release_page)
-        self.status_bar.addPermanentWidget(btn)
+        btn = Button(f"Update available: v{latest_version}", "success", icon="download",
+                     on_click=self._open_release_page, tooltip="Click to open the download page")
+        self.status_bar.insertPermanentWidget(0, btn)
+        self._notify(f"Update available: v{latest_version} — see the status bar", "info")
 
     def _open_release_page(self):
         import webbrowser
@@ -2072,9 +1716,17 @@ class MainWindow(QMainWindow):
         webbrowser.open("https://github.com/Huzzama/Steam-Grunge/issues")
 
     def _show_about(self):
-        QMessageBox.about(
-            self, "Steam Grunge Editor",
-            f"Steam Grunge Editor  v{APP_VERSION}\n\n"
-            "Create distressed Steam artwork.\n\n"
-            "Supports SteamGridDB API for artwork search."
-        )
+        import webbrowser
+        dlg = _Dialog(self, "Steam Grunge Editor", "", min_width=460, icon="sparkles")
+        g = grid(h=SP["md"], v=SP["sm"])
+        _form_row(g, 0, "Version", label(f"v{APP_VERSION}", "value"))
+        _form_row(g, 1, "What it does", label("Create distressed, grunge-style Steam artwork and install it "
+                                              "straight into your Steam library.", "body", wrap=True))
+        _form_row(g, 2, "Artwork search", label("SteamGridDB API", "body"))
+        _form_row(g, 3, "Cloud backup", label("PimpMySteam + Google Drive", "body"))
+        dlg.body.addLayout(g)
+        dlg.body.addWidget(label("Icons: Lucide (ISC licence).", "muted"))
+        dlg.add_button("GitHub", icon="external-link",
+                       on_click=lambda: webbrowser.open("https://github.com/Huzzama/Steam-Grunge"))
+        dlg.add_button("Close", "primary", on_click=dlg.accept)
+        dlg.exec()

@@ -5,21 +5,9 @@ if TYPE_CHECKING:
     from app.ui.tabManager import WorkspaceTab
 
 
-# ── filename suffix map ────────────────────────────────────────────────────────
-_SUFFIX: dict[str, str] = {
-    "cover":        "{appid}.png",
-    "vhs_cover":    "{appid}.png",
-    "wide":         "{appid}p.png",
-    "vhs_pile":     "{appid}p.png",    # wide format → same p suffix
-    "vhs_cassette": "{appid}p.png",    # wide format → same p suffix
-    "hero":         "{appid}_hero.png",
-    "logo":         "{appid}_logo.png",
-    "icon":         "{appid}_icon.png",
-}
-
 from app.config import (
     EXPORT_COVER, EXPORT_WIDE, EXPORT_HERO, EXPORT_LOGO, EXPORT_ICON,
-    TRANSPARENT_TEMPLATES,
+    TRANSPARENT_TEMPLATES, grid_filename,
 )
 
 _FOLDER: dict[str, str] = {
@@ -56,8 +44,7 @@ def run_export_flow(tab: "WorkspaceTab", parent_widget=None) -> Optional[str]:
 
     # 3. Build output filename
     tpl         = tab.state.current_template
-    suffix_tpl  = _SUFFIX.get(tpl, "{appid}.png")
-    filename    = suffix_tpl.format(appid=app_id)
+    filename    = grid_filename(app_id, tpl)
     folder      = _FOLDER.get(tpl, EXPORT_COVER)
 
     import os
@@ -119,10 +106,10 @@ def _get_or_confirm_app_id(tab: "WorkspaceTab", parent_widget) -> Optional[int]:
     if dlg.exec() != QDialog.Accepted:
         return None   # user cancelled
 
-    # Cache result in tab state AND registry for future sessions
+    # Cache result in tab state; the dialog already registered game_name →
+    # app_id in the registry (one entry per searched name, not two).
     state.confirmed_app_id   = dlg.result_app_id
     state.confirmed_app_name = dlg.result_name
-    registry.register(dlg.result_name, dlg.result_app_id, canonical=dlg.result_name)
     return state.confirmed_app_id
 
 

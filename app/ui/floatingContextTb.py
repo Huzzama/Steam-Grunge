@@ -5,21 +5,47 @@ import numpy as np
 from PIL import Image as PILImage
 
 from PySide6.QtCore    import Qt, QPoint, QTimer, Signal
-from PySide6.QtGui     import QColor
+from PySide6.QtGui     import QColor, QCursor, QPainter
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGridLayout, QLabel, QSlider, QFrame,
-    QToolButton, QMainWindow,
+    QPushButton, QMainWindow,
     QGraphicsDropShadowEffect,
 )
 
+from app.ui.kit   import IconButton, Divider, label, vbox, hbox
+from app.ui.theme import C, R, SP
+
 MIN_ALPHA          = 30
-TB_WIDTH           = 60
+TB_WIDTH           = 64
 SIDE_GAP           = 10
-MAX_PALETTE_COLORS = 6      
-SWATCH_SIZE        = 22     
-_BG    = "#16161f"
-_BORDER= "#2e2e44"
-_MONO  = "Courier New"
+MAX_PALETTE_COLORS = 6
+SWATCH_SIZE        = 22
+
+
+class _Swatch(QPushButton):
+    """Palette colour chip — painted, no stylesheet. clicked → replace this colour."""
+
+    def __init__(self, color: QColor, parent=None):
+        super().__init__(parent)
+        self.color = QColor(color)
+        self.setFixedSize(SWATCH_SIZE, SWATCH_SIZE)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.set_color(color)
+
+    def set_color(self, color: QColor):
+        self.color = QColor(color)
+        self.setToolTip(f"Replace rgb({self.color.red()},{self.color.green()},{self.color.blue()})")
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = self.rect().adjusted(0, 0, -1, -1)
+        p.setBrush(self.color)
+        p.setPen(QColor(C["accent"] if self.underMouse() else C["border_strong"]))
+        p.drawRoundedRect(r, R["sm"], R["sm"])
+        p.end()
 
 
 def _replace_colour(img, old_c, new_c, tol=38):
@@ -82,7 +108,7 @@ class FloatingContextTb(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
 
         self._canvas = None
-        self._swatch_btns:    List[QToolButton]          = []
+        self._swatch_btns:    List[_Swatch]                = []
         self._palette_colors: List[Tuple[int, int, int]] = []
 
         self._repos_timer = QTimer(self)
@@ -118,15 +144,8 @@ class FloatingContextTb(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(7, 7, 7, 7)
 
-        self._card = QWidget(self)
-        self._card.setObjectName("card")
-        self._card.setStyleSheet(f"""
-            #card {{
-                background:{_BG};
-                border:1px solid {_BORDER};
-                border-radius:10px;
-            }}
-        """)
+        self._card = QFrame(self)
+        self._card.setProperty("surface", "card")
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(20)
         shadow.setOffset(0, 4)
@@ -134,86 +153,58 @@ class FloatingContextTb(QWidget):
         self._card.setGraphicsEffect(shadow)
         outer.addWidget(self._card)
 
-        inner = QVBoxLayout(self._card)
-        inner.setContentsMargins(6, 8, 6, 8)
-        inner.setSpacing(6)
-        inner.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        inner = vbox(self._card, (SP["xs"], SP["xs"], SP["xs"], SP["xs"]), SP["xs"])
+        inner.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         # OPACITY
         op = QWidget()
-        ol = QVBoxLayout(op)
-        ol.setContentsMargins(0, 0, 0, 0)
-        ol.setSpacing(2)
-        ol.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        ol = vbox(op, (0, 0, 0, 0), 2)
+        ol.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         ol.addWidget(self._sec_label("OPACITY"))
-        self._op_sl = QSlider(Qt.Vertical)
+        self._op_sl = QSlider(Qt.Orientation.Vertical)
         self._op_sl.setRange(0, 100)
         self._op_sl.setValue(100)
         self._op_sl.setFixedHeight(70)
-        self._op_sl.setStyleSheet("""
-            QSlider::groove:vertical{background:#222233;width:4px;border-radius:2px;}
-            QSlider::handle:vertical{background:#5566cc;border:1px solid #3344aa;width:12px;height:12px;margin:-4px -4px;border-radius:6px;}
-            QSlider::sub-page:vertical{background:#5566cc;border-radius:2px;}
-        """)
+        self._op_sl.setToolTip("Layer opacity")
         self._op_sl.valueChanged.connect(self._on_opacity)
-        self._op_lbl = QLabel("100%")
-        self._op_lbl.setAlignment(Qt.AlignHCenter)
-        self._op_lbl.setStyleSheet(f"color:#555;font-size:8px;font-family:'{_MONO}';background:transparent;")
-        ol.addWidget(self._op_sl, 0, Qt.AlignHCenter)
+        self._op_lbl = label("100%", "mono", align=Qt.AlignmentFlag.AlignHCenter)
+        ol.addWidget(self._op_sl, 0, Qt.AlignmentFlag.AlignHCenter)
         ol.addWidget(self._op_lbl)
         inner.addWidget(op)
 
-        inner.addWidget(_Div())
+        inner.addWidget(Divider())
 
         # COLORS — palette swatches, populated dynamically in _rebuild_swatches()
         self._colors_w = QWidget()
-        cl = QVBoxLayout(self._colors_w)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(3)
-        cl.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        cl = vbox(self._colors_w, (0, 0, 0, 0), 3)
+        cl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         cl.addWidget(self._sec_label("COLORS"))
         self._swatch_grid = QWidget()
         self._swatch_layout = QGridLayout(self._swatch_grid)
         self._swatch_layout.setContentsMargins(0, 0, 0, 0)
         self._swatch_layout.setSpacing(3)
-        cl.addWidget(self._swatch_grid, 0, Qt.AlignHCenter)
+        cl.addWidget(self._swatch_grid, 0, Qt.AlignmentFlag.AlignHCenter)
         inner.addWidget(self._colors_w)
 
-        inner.addWidget(_Div())
+        inner.addWidget(Divider())
 
         # TOOLS
         tl_w = QWidget()
-        tl = QVBoxLayout(tl_w)
-        tl.setContentsMargins(0, 0, 0, 0)
-        tl.setSpacing(4)
-        tl.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        tl = vbox(tl_w, (0, 0, 0, 0), SP["xs"])
+        tl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         tl.addWidget(self._sec_label("TOOLS"))
-
-        btn_ss = f"""
-            QToolButton{{background:#1a1a28;color:#555;border:1px solid {_BORDER};border-radius:6px;font-size:14px;min-width:34px;min-height:34px;max-width:34px;max-height:34px;}}
-            QToolButton:hover{{background:#222238;color:#aaa;border-color:#4455aa;}}
-            QToolButton:pressed{{background:#2a2a50;}}
-        """
         for icon, tip, slot in [
-            ("✂",  "Crop",        self._on_crop),
-            ("↺",  "Rotate −90°", lambda: self._on_rotate(-90)),
-            ("↻",  "Rotate +90°", lambda: self._on_rotate(+90)),
+            ("crosshair",  "Crop layer",        self._on_crop),
+            ("rotate-ccw", "Rotate layer -90°", lambda: self._on_rotate(-90)),
+            ("rotate-cw",  "Rotate layer +90°", lambda: self._on_rotate(+90)),
         ]:
-            b = QToolButton()
-            b.setText(icon)
-            b.setToolTip(tip)
-            b.setStyleSheet(btn_ss)
-            b.clicked.connect(slot)
-            tl.addWidget(b, 0, Qt.AlignHCenter)
+            tl.addWidget(IconButton(icon, tip, 15, on_click=slot), 0, Qt.AlignmentFlag.AlignHCenter)
         inner.addWidget(tl_w)
 
         self.setFixedWidth(TB_WIDTH + 14)
 
     def _sec_label(self, text):
-        lbl = QLabel(text)
-        lbl.setStyleSheet(f"color:#383858;font-size:7px;font-weight:bold;letter-spacing:1px;font-family:'{_MONO}';background:transparent;")
-        lbl.setAlignment(Qt.AlignHCenter)
-        return lbl
+        return label(text, "eyebrow", align=Qt.AlignmentFlag.AlignHCenter)
 
     def _refresh(self):
         if self._canvas is None:
@@ -243,18 +234,11 @@ class FloatingContextTb(QWidget):
             self._colors_w.setVisible(False)
             return
         self._palette_colors = colors
-        ss = ("QToolButton{{border:1px solid #3a3a5a;border-radius:3px;"
-              "background:{bg};}}"
-              "QToolButton:hover{{border:2px solid #5566cc;}}")
         for i, (r, g, b) in enumerate(colors):
-            col = QColor(r, g, b)
-            btn = QToolButton()
-            btn.setFixedSize(SWATCH_SIZE, SWATCH_SIZE)
-            btn.setToolTip(f"Replace rgb({r},{g},{b})")
-            btn.setStyleSheet(ss.format(bg=col.name()))
-            # Capture by value — avoids the classic late-binding closure bug
+            btn = _Swatch(QColor(r, g, b))
+            # Capture the button itself — its .color is updated after a replace
             btn.clicked.connect(
-                lambda _chk=False, src=QColor(r, g, b): self._on_swatch_clicked(src)
+                lambda _chk=False, sw=btn: self._on_swatch_clicked(QColor(sw.color), sw)
             )
             self._swatch_layout.addWidget(btn, i // 2, i % 2)
             self._swatch_btns.append(btn)
@@ -266,7 +250,7 @@ class FloatingContextTb(QWidget):
         self._swatch_btns.clear()
         self._palette_colors.clear()
 
-    def _on_swatch_clicked(self, src_color: QColor):
+    def _on_swatch_clicked(self, src_color: QColor, swatch: Optional[_Swatch] = None):
         """Open color picker seeded with src_color; on accept replace it in the layer."""
         if self._canvas is None:
             return
@@ -283,20 +267,10 @@ class FloatingContextTb(QWidget):
         new_img = _replace_colour(layer.pil_image, src_color, new_c)
         self._canvas.replace_selected_layer_image(new_img)
         # Update the clicked swatch face to the newly chosen color
-        old_tip = f"Replace rgb({src_color.red()},{src_color.green()},{src_color.blue()})"
-        new_tip = f"Replace rgb({new_c.red()},{new_c.green()},{new_c.blue()})"
-        ss = ("QToolButton{{border:1px solid #3a3a5a;border-radius:3px;"
-              "background:{bg};}}"
-              "QToolButton:hover{{border:2px solid #5566cc;}}")
-        for btn in self._swatch_btns:
-            if btn.toolTip() == old_tip:
-                btn.setStyleSheet(ss.format(bg=new_c.name()))
-                btn.setToolTip(new_tip)
-                btn.clicked.disconnect()
-                btn.clicked.connect(
-                    lambda _chk=False, src=QColor(new_c): self._on_swatch_clicked(src)
-                )
-                break
+        if swatch is None:
+            swatch = next((b for b in self._swatch_btns if b.color == src_color), None)
+        if swatch is not None:
+            swatch.set_color(new_c)
 
     def _sync_opacity(self):
         if self._canvas is None: return
@@ -357,10 +331,3 @@ class FloatingContextTb(QWidget):
             if isinstance(w, QMainWindow): return w
             w = w.parent()
         return None
-
-
-class _Div(QFrame):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFrameShape(QFrame.HLine)
-        self.setStyleSheet(f"color:{_BORDER};background:{_BORDER};max-height:1px;")

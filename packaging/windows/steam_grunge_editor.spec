@@ -25,7 +25,7 @@ ICON = os.path.join(ROOT, 'app', 'assets', 'icon.ico')
 
 # ── Collect all assets ────────────────────────────────────────────────────────
 added_files = [
-    # Assets folder — textures, brushes, fonts, templates, icons, ratings
+    # Assets folder — textures, fonts, templates, icons, ratings
     (os.path.join(ROOT, 'app', 'assets'),  'app/assets'),
     # VERSION file — read at runtime by mainWindow.py for APP_VERSION
     (os.path.join(ROOT, 'VERSION'),        '.'),
@@ -80,6 +80,13 @@ a = Analysis(
     ],
     noarchive=False,
 )
+
+# googleapiclient ships ~100 MB of discovery documents for every Google API;
+# the app only talks to Drive v3.
+def _keep(entry):
+    dest = entry[0].replace("\\", "/")
+    return "discovery_cache/documents/" not in dest or dest.endswith("/drive.v3.json")
+a.datas = [d for d in a.datas if _keep(d)]
 
 pyz = PYZ(a.pure)
 

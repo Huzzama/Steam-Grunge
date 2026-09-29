@@ -79,3 +79,11 @@ token.json
 __pycache__/
 .venv/
 *.pyc
+
+# release builds (packaging/linux/build-bundle.sh)
+.build-venv/
+packaging/appimage/appimagetool-*.AppImage
+
+# local helpers / assistant scratch — never committed
+Claude outputs/
+tools/release/

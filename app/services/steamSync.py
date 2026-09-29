@@ -48,7 +48,7 @@ class _SessionArtworkCounter:
             count = self._count
             self._count = 0
             self._timer = None
-        if count <= 0:
+        if count <= 0 or not usage_stats_enabled():
             return
         try:
             from app.services.steamkustom_auth import get_token
@@ -77,6 +77,17 @@ class _SessionArtworkCounter:
             print(f"[steamSync] reported {count} artwork sync(s) to backend")
         except Exception as e:
             print(f"[steamSync] counter flush error (non-fatal): {e}")
+
+
+def usage_stats_enabled() -> bool:
+    """Opt-in preference (Preferences → Steam). Off unless the user enabled it."""
+    try:
+        import json
+        from app.config import DATA_DIR
+        with open(os.path.join(DATA_DIR, "preferences.json"), encoding="utf-8") as f:
+            return bool(json.load(f).get("send_usage_stats", False))
+    except Exception:
+        return False
 
 
 _session_artwork_counter = _SessionArtworkCounter()
@@ -248,8 +259,39 @@ def find_steam_userdata() -> Optional[Path]:
     return None
 
 
+_STEAMID64_BASE = 76561197960265728   # SteamID64 = account id + this
+
+
+def most_recent_steam_id(userdata_path: Path) -> Optional[str]:
+    """
+    Account id (the userdata/<id> folder name) of the account Steam logged in
+    with most recently, read from <steam root>/config/loginusers.vdf.
+    Returns None if the file is missing or unparsable.
+    """
+    try:
+        import re
+        vdf = userdata_path.parent / "config" / "loginusers.vdf"
+        text = vdf.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+    # Blocks look like:  "76561198012345678" { ... "MostRecent" "1" ... }
+    fallback = None
+    for m in re.finditer(r'"(\d{17})"\s*\{(.*?)\n\s*\}', text, re.S):
+        sid64, body = m.group(1), m.group(2)
+        acc = str(int(sid64) - _STEAMID64_BASE)
+        if fallback is None:
+            fallback = acc
+        if re.search(r'"MostRecent"\s*"1"', body):
+            return acc
+    return fallback
+
+
 def list_steam_ids(userdata_path: Path) -> list:
-    """Return SteamID folder names found under userdata/."""
+    """
+    Return SteamID folder names found under userdata/, most recently used
+    account first (per loginusers.vdf), so callers that take [0] get the
+    account the user is actually logged in with.
+    """
     if not userdata_path or not userdata_path.exists():
         return []
     ids = []
@@ -257,6 +299,10 @@ def list_steam_ids(userdata_path: Path) -> list:
         if entry.is_dir() and entry.name.isdigit():
             if (entry / "config").exists():
                 ids.append(entry.name)
+    recent = most_recent_steam_id(userdata_path)
+    if recent in ids:
+        ids.remove(recent)
+        ids.insert(0, recent)
     return ids
 
 
@@ -271,165 +317,19 @@ def get_grid_folder(userdata_path: Path, steam_id: str) -> Path:
 
 def _grid_filename(app_id: int, template: str) -> str:
     """
-    Filename for userdata/.../config/grid/
-    These are the custom artwork override files Steam reads.
-
-    vhs_cover is a portrait cover variant and correctly maps to {appid}.png,
-    the same slot as cover. It is NOT a wide/header asset.
+    Filename for userdata/.../config/grid/ — the custom artwork override
+    files Steam reads.  Mapping lives in app.config.GRID_FILENAMES:
+    {appid}p.png is the portrait cover, {appid}.png the wide capsule.
     """
-    mapping = {
-        "cover":        f"{app_id}.png",
-        "vhs_cover":    f"{app_id}.png",    # portrait cover variant — same slot as cover
-        "wide":         f"{app_id}p.png",
-        "vhs_pile":     f"{app_id}p.png",
-        "vhs_cassette": f"{app_id}p.png",
-        "hero":         f"{app_id}_hero.png",
-        "logo":         f"{app_id}_logo.png",
-        "icon":         f"{app_id}_icon.png",
-    }
-    return mapping.get(template, f"{app_id}_{template}.png")
-
-
-# ── A. Structured target container ────────────────────────────────────────────
-
-@dataclass
-class LibraryCacheTargets:
-    """
-    Discovered file paths inside appcache/librarycache/<appid>/, classified
-    by asset type using basename matching only (folder names are ignored so
-    hashed subfolder layouts like <appid>/<hash>/library_600x900.jpg work).
-
-    hero_blur: collected for logging/reporting only — never written to.
-    unknown:   files that didn't match any known pattern — never touched.
-    """
-    cover:     List[Path] = field(default_factory=list)
-    header:    List[Path] = field(default_factory=list)
-    hero:      List[Path] = field(default_factory=list)
-    hero_blur: List[Path] = field(default_factory=list)   # observed, never synced
-    logo:      List[Path] = field(default_factory=list)
-    icon:      List[Path] = field(default_factory=list)
-    unknown:   List[Path] = field(default_factory=list)
-
-    def targets_for_template(self, template: str) -> List[Path]:
-        """
-        Return discovered librarycache destination paths for a given export
-        template name.
-
-        vhs_cover is a portrait cover variant — it maps to cover targets
-        (library_600x900.jpg, library_capsule.jpg), NOT header targets.
-        wide / vhs_pile / vhs_cassette are wide assets and map to header targets.
-        """
-        _map = {
-            "cover":        self.cover,
-            "vhs_cover":    self.cover,     # portrait cover variant — same targets as cover
-            "wide":         self.header,
-            "vhs_pile":     self.header,
-            "vhs_cassette": self.header,
-            "hero":         self.hero,
-            "logo":         self.logo,
-            "icon":         self.icon,
-        }
-        return _map.get(template, [])
-
-    def total_syncable(self) -> int:
-        """Count of all targets that can actually be written to."""
-        return (len(self.cover) + len(self.header) + len(self.hero)
-                + len(self.logo) + len(self.icon))
-
-
-# ── B. Basename classification ────────────────────────────────────────────────
-
-# Files to silently skip — not errors, just irrelevant noise
-_IGNORE_BASENAMES = {"markers.svg"}
-
-
-def _classify_basename(name: str) -> Optional[str]:
-    """
-    Classify a file into an asset-type string using only its basename.
-
-    Parent folder names are deliberately ignored so that hashed subfolders
-    (e.g. <appid>/a3f8c2d1e.../library_600x900.jpg) are handled identically
-    to flat layouts (e.g. <appid>/library_600x900.jpg).
-
-    Returns one of:
-      "cover", "header", "hero", "hero_blur", "logo", "icon", "ignore", None
-    None means the file is unrecognized and will be collected in 'unknown'.
-    """
-    lower = name.lower()
-
-    if lower in _IGNORE_BASENAMES:
-        return "ignore"
-
-    # Cover / capsule
-    if lower in ("library_600x900.jpg", "library_600x900.jpeg",
-                 "library_capsule.jpg", "library_capsule.jpeg"):
-        return "cover"
-
-    # Header / wide
-    if lower in ("header.jpg", "header.jpeg",
-                 "library_header.jpg", "library_header.jpeg"):
-        return "header"
-
-    # Hero blur — must be checked before hero (substring match would collide)
-    if lower in ("library_hero_blur.jpg", "library_hero_blur.jpeg",
-                 "library_hero_blur.png"):
-        return "hero_blur"
-
-    # Hero
-    if lower in ("library_hero.jpg", "library_hero.jpeg", "library_hero.png"):
-        return "hero"
-
-    # Logo
-    if lower in ("logo.png", "logo.jpg", "logo.jpeg"):
-        return "logo"
-
-    # Icon
-    if lower in ("icon.jpg", "icon.jpeg", "icon.png"):
-        return "icon"
-
-    return None  # unrecognized
-
-
-# ── C. Recursive discovery ────────────────────────────────────────────────────
-
-def find_librarycache_targets(appid_dir: Path) -> LibraryCacheTargets:
-    """
-    Recursively scan appcache/librarycache/<appid>/ and classify every file
-    by its basename. Returns a LibraryCacheTargets with all discovered paths.
-
-    Works with both:
-      - flat layouts:   <appid>/library_600x900.jpg
-      - hashed layouts: <appid>/<hash>/library_600x900.jpg
-
-    Safe to call when appid_dir does not exist — returns empty targets.
-    Never raises for normal missing-path or permission conditions.
-    """
-    targets = LibraryCacheTargets()
-
-    if not appid_dir or not appid_dir.is_dir():
-        return targets
-
-    try:
-        for path in appid_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            category = _classify_basename(path.name)
-            if category == "ignore":
-                continue
-            if category is None:
-                targets.unknown.append(path)
-            else:
-                getattr(targets, category).append(path)
-    except Exception as e:
-        _log(f"[steamSync] discovery error scanning {appid_dir}: {e}", level=logging.WARNING)
-
-    return targets
+    from app.config import grid_filename
+    return grid_filename(app_id, template)
 
 
 def _librarycache_dir(steam_root: Path, app_id: int) -> Optional[Path]:
     """
     Return the per-appid librarycache subfolder if it exists.
-    We never create this directory ourselves — Steam owns it.
+    We never create or write into this directory — Steam owns it. It is only
+    touched (mtime) by the post-sync "soft" strategy.
     """
     d = steam_root / "appcache" / "librarycache" / str(app_id)
     return d if d.is_dir() else None
@@ -449,38 +349,22 @@ def _build_sync_plan(
     app_id:     int,
     exports:    Dict[str, str],        # template → absolute PNG source path
     grid_dir:   Path,
-    lc_targets: LibraryCacheTargets,
 ) -> List[SyncOperation]:
     """
-    Build the complete list of SyncOperations for one sync run.
-
-    For each valid export:
-      - one grid write  (always present when source exists)
-      - N librarycache writes  (one per discovered matching target)
-
-    hero_blur targets are never added to the plan (per product policy).
+    Build the list of SyncOperations for one sync run: one grid write per
+    valid export.  Only userdata/<id>/config/grid/ is written — Steam's own
+    appcache/librarycache is never modified.
     """
     ops: List[SyncOperation] = []
 
     for template, src_path in exports.items():
         if not src_path or not Path(src_path).is_file():
             continue
-        src = Path(src_path)
-
-        # Grid destination — always one per template
         ops.append(SyncOperation(
             asset_type  = template,
-            source      = src,
+            source      = Path(src_path),
             destination = grid_dir / _grid_filename(app_id, template),
         ))
-
-        # librarycache destinations — zero or more discovered targets
-        for lc_dest in lc_targets.targets_for_template(template):
-            ops.append(SyncOperation(
-                asset_type  = template,
-                source      = src,
-                destination = lc_dest,
-            ))
 
     return ops
 
@@ -509,12 +393,11 @@ def _execute_write(op: SyncOperation) -> SyncWriteResult:
     """
     try:
         suffix = op.destination.suffix.lower()
-        img    = Image.open(op.source)
-
-        if suffix == ".png":
-            img.convert("RGBA").save(op.destination, "PNG", optimize=True)
-        else:
-            img.convert("RGB").save(op.destination, "JPEG", quality=92, optimize=True)
+        with Image.open(op.source) as img:
+            if suffix == ".png":
+                img.convert("RGBA").save(op.destination, "PNG", optimize=True)
+            else:
+                img.convert("RGB").save(op.destination, "JPEG", quality=92, optimize=True)
 
         os.utime(op.destination, (time.time(), time.time()))
         _log(f"[steamSync] wrote {op.asset_type} -> {op.destination}")
@@ -678,22 +561,25 @@ def is_steam_running() -> bool:
     system = platform.system()
     try:
         if system == "Linux":
-            # Fast path: /proc scan — match any comm containing "steam"
-            # Catches: steam, steamwebhelper, steam-runtime, etc.
+            # /proc scan on exact process names. A substring match on "steam"
+            # (or `pgrep -f steam`) would match THIS app — its path and binary
+            # both contain "steam" — and report Steam as always running.
+            steam_comms = {"steam", "steamwebhelper", "steam-runtime-l", "steam_osx"}
             proc_dir = Path("/proc")
+            me = str(os.getpid())
             if proc_dir.exists():
                 for pid_dir in proc_dir.iterdir():
-                    if not pid_dir.name.isdigit():
+                    if not pid_dir.name.isdigit() or pid_dir.name == me:
                         continue
                     try:
                         comm = (pid_dir / "comm").read_text().strip().lower()
-                        if "steam" in comm:
+                        if comm in steam_comms:
                             return True
                     except (PermissionError, FileNotFoundError):
                         continue
-            # Fallback: pgrep -f matches full cmdline, not just comm
+                return False
             r = subprocess.run(
-                ["pgrep", "-f", "steam"],
+                ["pgrep", "-x", "steam"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             return r.returncode == 0
@@ -1071,37 +957,24 @@ class SyncSummary:
     Detailed, honest accounting of a sync run. Attached to SyncResult.summary.
 
     outcome property returns one of:
-      "success"   — all planned writes completed successfully
-      "partial"   — some writes succeeded, some failed or were skipped
-      "grid_only" — grid written, but no librarycache targets existed
-      "failure"   — nothing written anywhere
+      "success"   — all planned grid writes completed successfully
+      "partial"   — some writes succeeded, some failed
+      "failure"   — nothing written
     """
-    app_id:                       int
-    grid_targets_found:           int
-    grid_targets_written:         int
-    librarycache_targets_found:   int
-    librarycache_targets_written: int
-    skipped_targets:              List[str] = field(default_factory=list)
-    warnings:                     List[str] = field(default_factory=list)
-    errors:                       List[str] = field(default_factory=list)
+    app_id:               int
+    grid_targets_found:   int
+    grid_targets_written: int
+    skipped_targets:      List[str] = field(default_factory=list)
+    warnings:             List[str] = field(default_factory=list)
+    errors:               List[str] = field(default_factory=list)
 
     @property
     def outcome(self) -> str:
-        grid_ok  = self.grid_targets_written > 0
-        lc_ok    = self.librarycache_targets_written > 0
-        lc_exist = self.librarycache_targets_found > 0
-
-        if not grid_ok and self.errors:
+        if self.grid_targets_written == 0:
             return "failure"
-        if grid_ok and not lc_exist:
-            return "grid_only"
-        total_planned = self.grid_targets_found + self.librarycache_targets_found
-        total_written = self.grid_targets_written + self.librarycache_targets_written
-        if grid_ok and lc_ok and total_written >= total_planned:
+        if self.grid_targets_written >= self.grid_targets_found:
             return "success"
-        if grid_ok or lc_ok:
-            return "partial"
-        return "failure"
+        return "partial"
 
 
 @dataclass
@@ -1109,7 +982,7 @@ class SyncResult:
     """
     Legacy-compatible result returned by sync_artwork().
 
-    Existing callers (bulkSync, exportFlow, UI) are unchanged.
+    Existing callers (exportFlow, UI) are unchanged.
     result.summary carries the richer SyncSummary for UIs that want detail.
 
     success = True when at least one grid target was written successfully.
@@ -1137,11 +1010,11 @@ def sync_artwork(
     auto_threshold:   int              = 0,    # 0 → use AUTO_RESTART_THRESHOLD
 ) -> SyncResult:
     """
-    Copy artwork to Steam's grid folder AND all discovered librarycache
-    targets so the library UI shows the new images without a restart.
+    Copy artwork to Steam's userdata/<id>/config/grid folder (the official
+    custom-artwork location) and signal Steam to reload it.
 
     Public API is backward-compatible — all new parameters are keyword-only
-    with safe defaults. Existing callers (bulkSync, exportFlow) need no changes.
+    with safe defaults. Existing callers (exportFlow, drive_sync) need no changes.
     A richer SyncSummary is available at result.summary.
 
     Post-sync behaviour is controlled by:
@@ -1163,17 +1036,8 @@ def sync_artwork(
     # Accumulate in session counter — flushed every 10 min or on app close
     _session_artwork_counter.increment()
 
-    # ── C. Discover librarycache targets recursively ───────────────────────
-    appid_dir  = _librarycache_dir(steam_root, app_id)
-    lc_targets = find_librarycache_targets(appid_dir) if appid_dir else LibraryCacheTargets()
-
-    _log(f"[steamSync] discovered cover targets:    {len(lc_targets.cover)}")
-    _log(f"[steamSync] discovered header targets:   {len(lc_targets.header)}")
-    _log(f"[steamSync] discovered hero targets:     {len(lc_targets.hero)}")
-    _log(f"[steamSync] ignored hero_blur targets:   {len(lc_targets.hero_blur)}")
-    _log(f"[steamSync] discovered logo targets:     {len(lc_targets.logo)}")
-    _log(f"[steamSync] discovered icon targets:     {len(lc_targets.icon)}")
-    _log(f"[steamSync] unknown files:               {len(lc_targets.unknown)}")
+    # Only used by the post-sync "soft" strategy to touch the folder mtime.
+    appid_dir = _librarycache_dir(steam_root, app_id)
 
     # ── Filter to valid sources, record missing as skipped ────────────────
     valid_exports: Dict[str, str] = {}
@@ -1184,11 +1048,8 @@ def sync_artwork(
             result.skipped.append(template)
 
     # ── D. Build sync plan ────────────────────────────────────────────────
-    all_ops  = _build_sync_plan(app_id, valid_exports, grid_dir, lc_targets)
-    grid_ops = [op for op in all_ops if op.destination.parent == grid_dir]
-    lc_ops   = [op for op in all_ops if op.destination.parent != grid_dir]
+    grid_ops = _build_sync_plan(app_id, valid_exports, grid_dir)
 
-    # Overwrite guard applies to grid only (librarycache always overwritten)
     if not overwrite:
         approved_grid = []
         for op in grid_ops:
@@ -1200,18 +1061,12 @@ def sync_artwork(
 
     # ── E. Execute all writes safely ──────────────────────────────────────
     grid_results: List[SyncWriteResult] = [_execute_write(op) for op in grid_ops]
-    lc_results:   List[SyncWriteResult] = [_execute_write(op) for op in lc_ops]
 
     for wr in grid_results:
         if wr.success:
             result.installed.append(str(wr.destination))
         else:
             result.errors.append(f"{wr.asset_type} grid: {wr.error}")
-
-    for wr in lc_results:
-        if not wr.success:
-            # Non-fatal — grid write may already have succeeded
-            result.errors.append(f"{wr.asset_type} lcache: {wr.error}")
 
     # Nothing installed and nothing errored → everything was skipped
     if not result.installed and not result.errors:
@@ -1246,42 +1101,18 @@ def sync_artwork(
 
     # ── G. Build SyncSummary ──────────────────────────────────────────────
     grid_written = sum(1 for wr in grid_results if wr.success)
-    lc_written   = sum(1 for wr in lc_results   if wr.success)
-    # Use the number of *planned* lc operations, not all discovered targets.
-    # This prevents misleading "partial" outcomes when other asset types exist
-    # in librarycache that simply weren't part of this sync run.
-    lc_found     = len(lc_ops)
-
-    warnings = []
-    if lc_targets.hero_blur:
-        warnings.append(
-            f"Ignored {len(lc_targets.hero_blur)} hero_blur target(s) "
-            f"(not a supported sync type)."
-        )
-    if lc_targets.unknown:
-        warnings.append(
-            f"{len(lc_targets.unknown)} unrecognized file(s) in librarycache "
-            f"left untouched."
-        )
 
     summary = SyncSummary(
-        app_id                       = app_id,
-        grid_targets_found           = len(grid_ops),
-        grid_targets_written         = grid_written,
-        librarycache_targets_found   = lc_found,
-        librarycache_targets_written = lc_written,
-        skipped_targets              = list(result.skipped),
-        warnings                     = warnings,
-        errors                       = list(result.errors),
+        app_id               = app_id,
+        grid_targets_found   = len(grid_ops),
+        grid_targets_written = grid_written,
+        skipped_targets      = list(result.skipped),
+        errors               = list(result.errors),
     )
 
     result.success = summary.outcome != "failure"
     result.summary = summary
 
-    _log(
-        f"[steamSync] outcome: {summary.outcome} "
-        f"(grid {grid_written}/{len(grid_ops)}, "
-        f"lcache {lc_written}/{lc_found})"
-    )
+    _log(f"[steamSync] outcome: {summary.outcome} (grid {grid_written}/{len(grid_ops)})")
 
     return result

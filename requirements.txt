@@ -1,12 +1,9 @@
-PySide6>=6.5.0
-PySide6-Addons>=6.5.0
+PySide6-Essentials>=6.5.0
 Pillow>=10.0.0
 requests>=2.31.0
 numpy>=1.24.0
-opencv-python>=4.8.0
-# Google Drive sync
+# Google Drive backup (token comes from PimpMySteam — no OAuth flow in the app)
 google-auth>=2.29.0
-google-auth-oauthlib>=1.2.0
 google-auth-httplib2>=0.2.0
 google-api-python-client>=2.127.0
-certifi>=2024.2.2
+certifi>=2024.2.2

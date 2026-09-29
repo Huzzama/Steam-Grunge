@@ -80,7 +80,13 @@ class AppIdRegistry:
                     elif isinstance(v, dict) and "id" in v:
                         self._data[k] = v
         except Exception as e:
+            # Keep the corrupt file around instead of silently discarding
+            # every mapping the user ever confirmed.
             print(f"[AppIdRegistry] Load error (starting fresh): {e}")
+            try:
+                os.replace(self._path, self._path + ".corrupt")
+            except OSError:
+                pass
             self._data = {}
 
     def _save_unlocked(self):

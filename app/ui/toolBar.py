@@ -1,12 +1,12 @@
 from __future__ import annotations
 from enum import Enum, auto
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QToolButton, QLabel, QSizePolicy,
-    QButtonGroup,
-)
-from PySide6.QtCore  import Qt, Signal, QSize
-from PySide6.QtGui   import QFont, QColor, QPainter, QPen, QBrush
+from PySide6.QtWidgets import QFrame, QSizePolicy, QButtonGroup
+from PySide6.QtCore  import Qt, Signal
+from PySide6.QtGui   import QColor, QPainter
+
+from app.ui.kit   import IconButton, Divider, vbox
+from app.ui.theme import C, SP
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -23,24 +23,23 @@ class ToolMode(Enum):
     ZOOM         = auto()
 
 
-# ── Per-tool metadata (icon, label, tooltip, keyboard shortcut hint) ──────────
+# ── Per-tool metadata (Lucide icon, label, tooltip with keyboard shortcut hint) ─
 _TOOL_META: dict[ToolMode, dict] = {
-    ToolMode.MOVE:         dict(icon="✥",  label="Move",   tip="Move Tool  [V]\nDrag layers. Group moves all children."),
-    ToolMode.BRUSH:        dict(icon="✏",  label="Brush",  tip="Brush Tool  [B]\nPaint on the active paint layer."),
-    ToolMode.ERASER:       dict(icon="⌫",  label="Eraser", tip="Eraser Tool  [E]\nErase pixels (writes transparency)."),
-    ToolMode.RECTANGLE:    dict(icon="▭",  label="Rect",   tip="Rectangle Tool  [R]\nDraw a new rectangle shape layer."),
-    ToolMode.ELLIPSE:      dict(icon="◯",  label="Ellipse",tip="Ellipse Tool  [O]\nDraw a new ellipse shape layer."),
-    ToolMode.COLOR_PICKER: dict(icon="⊕",  label="Pick",   tip="Color Picker  [I]\nClick canvas to sample color."),
-    ToolMode.HAND:         dict(icon="✋",  label="Hand",   tip="Hand Tool  [H]\nPan the canvas by dragging."),
-    ToolMode.ZOOM:         dict(icon="⊕",  label="Zoom",   tip="Zoom Tool  [Z]\nClick = zoom in.  Shift/Right = zoom out."),
+    ToolMode.MOVE:         dict(icon="move",       label="Move",   tip="Move Tool  [V]\nDrag layers. Group moves all children."),
+    ToolMode.BRUSH:        dict(icon="paintbrush", label="Brush",  tip="Brush Tool  [B]\nPaint on the active paint layer."),
+    ToolMode.ERASER:       dict(icon="eraser",     label="Eraser", tip="Eraser Tool  [E]\nErase pixels (writes transparency)."),
+    ToolMode.RECTANGLE:    dict(icon="square",     label="Rect",   tip="Rectangle Tool  [R]\nDraw a new rectangle shape layer."),
+    ToolMode.ELLIPSE:      dict(icon="circle-dot", label="Ellipse",tip="Ellipse Tool  [O]\nDraw a new ellipse shape layer."),
+    ToolMode.COLOR_PICKER: dict(icon="pipette",    label="Pick",   tip="Color Picker  [I]\nClick canvas to sample color."),
+    ToolMode.HAND:         dict(icon="maximize",   label="Hand",   tip="Hand Tool  [H]\nPan the canvas by dragging."),
+    ToolMode.ZOOM:         dict(icon="zoom-in",    label="Zoom",   tip="Zoom Tool  [Z]\nClick = zoom in.  Shift/Right = zoom out."),
 }
 
 # Keyboard shortcut → ToolMode (handled in ToolBar.keyPressEvent forwarded
 # from MainWindow; these are advisory, the canvas also handles them)
 KEY_SHORTCUTS: dict[str, ToolMode] = {
     "v": ToolMode.MOVE,
-    "b": ToolMode.BRUSH,
-    "e": ToolMode.ERASER,
+    # "b" / "e" (brush / eraser) removed — the brush engine no longer exists
     "r": ToolMode.RECTANGLE,
     "o": ToolMode.ELLIPSE,
     "i": ToolMode.COLOR_PICKER,
@@ -59,65 +58,29 @@ _ORDERED = [
     ToolMode.ZOOM,
 ]
 
-_BG      = "#141420"
-_BORDER  = "#252535"
-_ACTIVE  = "#3a3a6a"
-_ACCENT  = "#5566cc"
-_TEXT    = "#666"
-_ACTIVE_TEXT = "#ddd"
+# first tool of each logical group gets a separator above it
+_GROUP_STARTS = {ToolMode.RECTANGLE, ToolMode.COLOR_PICKER, ToolMode.HAND}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Individual tool button
 # ─────────────────────────────────────────────────────────────────────────────
-class _ToolButton(QToolButton):
+class _ToolButton(IconButton):
     def __init__(self, mode: ToolMode, parent=None):
-        super().__init__(parent)
-        self.mode = mode
         meta = _TOOL_META[mode]
-        self.setText(meta["icon"])
-        self.setToolTip(meta["tip"])
-        self.setCheckable(True)
-        self.setFixedSize(44, 44)
-        self.setFocusPolicy(Qt.NoFocus)
-        self._apply_style(False)
-
-    def _apply_style(self, active: bool):
-        if active:
-            self.setStyleSheet(f"""
-                QToolButton {{
-                    background: {_ACTIVE};
-                    color: {_ACTIVE_TEXT};
-                    border: 1px solid {_ACCENT};
-                    border-radius: 6px;
-                    font-size: 18px;
-                }}
-            """)
-        else:
-            self.setStyleSheet(f"""
-                QToolButton {{
-                    background: transparent;
-                    color: {_TEXT};
-                    border: 1px solid transparent;
-                    border-radius: 6px;
-                    font-size: 18px;
-                }}
-                QToolButton:hover {{
-                    background: #1e1e30;
-                    color: #aaa;
-                    border-color: {_BORDER};
-                }}
-            """)
+        super().__init__(meta["icon"], meta["tip"], 18, checkable=True, variant="tool", parent=parent)
+        self.mode = mode
 
     def setChecked(self, v: bool):
         super().setChecked(v)
-        self._apply_style(v)
+        # the toggled hook is skipped while signals are blocked — keep the tint in sync
+        self.set_icon(self._icon_name, C["accent"] if v else self._color)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  ToolBar widget
 # ─────────────────────────────────────────────────────────────────────────────
-class ToolBar(QWidget):
+class ToolBar(QFrame):
     """
     Vertical tool selector strip.
 
@@ -132,51 +95,25 @@ class ToolBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(52)
-        self.setStyleSheet(f"""
-            QWidget {{
-                background: {_BG};
-                border-right: 1px solid {_BORDER};
-            }}
-        """)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.setProperty("surface", "panel")
+        self.setFixedWidth(34 + 2 * SP["xs"] + 1)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 8, 4, 8)
-        layout.setSpacing(2)
-        layout.setAlignment(Qt.AlignTop)
-
-        # Header dot
-        dot = QLabel("✦")
-        dot.setAlignment(Qt.AlignCenter)
-        dot.setFixedHeight(20)
-        dot.setStyleSheet(
-            "color: #0a1828; font-size: 12px; background: transparent;"
-            "border: none;")
-        layout.addWidget(dot)
-        layout.addSpacing(6)
+        layout = vbox(self, (SP["xs"], SP["sm"], SP["xs"] + 1, SP["sm"]), SP["xs"])
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._buttons: dict[ToolMode, _ToolButton] = {}
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
 
-        prev_group: list[ToolMode] = []
-
         for mode in _ORDERED:
-            # Separator between logical groups
-            if mode == ToolMode.RECTANGLE and prev_group:
-                layout.addWidget(self._sep())
-            elif mode == ToolMode.COLOR_PICKER and prev_group:
-                layout.addWidget(self._sep())
-            elif mode == ToolMode.HAND and prev_group:
-                layout.addWidget(self._sep())
-
+            if mode in _GROUP_STARTS:
+                layout.addWidget(Divider())
             btn = _ToolButton(mode, self)
             btn.clicked.connect(lambda checked, m=mode: self._on_btn_clicked(m))
             self._group.addButton(btn)
             self._buttons[mode] = btn
-            layout.addWidget(btn)
-            prev_group.append(mode)
+            layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         layout.addStretch()
 
@@ -184,13 +121,12 @@ class ToolBar(QWidget):
         self._active: ToolMode = ToolMode.MOVE
         self._buttons[ToolMode.MOVE].setChecked(True)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-    @staticmethod
-    def _sep() -> QWidget:
-        line = QWidget()
-        line.setFixedHeight(1)
-        line.setStyleSheet(f"background: {_BORDER}; border: none;")
-        return line
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(C["bg_deep"]))
+        p.fillRect(self.width() - 1, 0, 1, self.height(), QColor(C["border"]))
+        p.end()
 
     # ── API ───────────────────────────────────────────────────────────────────
     def active_tool(self) -> ToolMode:

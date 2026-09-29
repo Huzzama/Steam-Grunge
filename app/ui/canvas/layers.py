@@ -96,6 +96,10 @@ class Layer:
     transform_tx:      int   = 0
     transform_ty:      int   = 0
 
+    # Index of the group layer this layer belongs to (None = top level).
+    # A real field so it survives project save/load and history snapshots.
+    _group_parent:     Optional[int] = None
+
     # QPixmap render cache
     _pix: Optional[QPixmap] = field(default=None, repr=False, compare=False)
 

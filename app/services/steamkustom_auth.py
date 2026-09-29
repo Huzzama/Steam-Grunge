@@ -7,30 +7,46 @@ import threading
 from pathlib import Path
 from typing import Optional, Callable
 
-from config import BASE_DIR
-SETTINGS_PATH = BASE_DIR / "settings.json"
-API_URL       = "https://api.pimpmysteam.com"
+from app.config import BASE_DIR, DATA_DIR, API_URL
+
+# Token lives in the user-writable data dir (same settings.json the
+# SteamGridDB key uses). The old location next to the code is read-only on
+# installed builds and is only read as a fallback for migration.
+SETTINGS_PATH        = Path(DATA_DIR) / "settings.json"
+_LEGACY_SETTINGS     = BASE_DIR / "settings.json"
+_TOKEN_KEY           = "steamkustom_token"
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(f"[PimpMySteam] could not read {path}: {e}")
+    return {}
 
 
 def get_token() -> Optional[str]:
-    try:
-        if SETTINGS_PATH.exists():
-            with open(SETTINGS_PATH, encoding="utf-8") as f:
-                return json.load(f).get("steamkustom_token") or None
-    except Exception:
-        pass
-    return None
+    token = _read_json(SETTINGS_PATH).get(_TOKEN_KEY)
+    if not token:
+        token = _read_json(_LEGACY_SETTINGS).get(_TOKEN_KEY)
+    return token or None
 
 
 def save_token(token: str) -> bool:
     try:
-        data = {}
-        if SETTINGS_PATH.exists():
-            with open(SETTINGS_PATH, encoding="utf-8") as f:
-                data = json.load(f)
-        data["steamkustom_token"] = token
+        data = _read_json(SETTINGS_PATH)
+        data[_TOKEN_KEY] = token
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            import os
+            os.chmod(SETTINGS_PATH, 0o600)
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"[PimpMySteam] save_token error: {e}")

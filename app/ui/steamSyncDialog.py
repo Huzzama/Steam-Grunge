@@ -7,16 +7,19 @@ from typing import Optional, List
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QComboBox, QFrame, QScrollArea, QWidget,
-    QProgressBar, QMessageBox, QSizePolicy,
+    QProgressBar, QMessageBox, QSizePolicy, QGridLayout,
 )
 from PySide6.QtCore import Qt, Signal, QObject, QThread
-from PySide6.QtGui  import QFont, QColor
 
 from app.services.appIdGetter import search_candidates, NetworkError
 from app.services.steamSync   import (
     find_steam_userdata, list_steam_ids,
     get_grid_folder, sync_artwork, SyncResult,
 )
+from app.ui        import icons
+from app.ui.kit    import Button, Divider, Section, label, hbox, vbox, grid, set_tone
+from app.ui.theme  import C, SP
+
 
 # ── Async worker ──────────────────────────────────────────────────────────────
 class _AppIdWorker(QObject):
@@ -36,63 +39,45 @@ class _AppIdWorker(QObject):
             self.finished.emit([], str(e))
 
 
-# ── Divider helper ────────────────────────────────────────────────────────────
-def _hline():
-    f = QFrame(); f.setFrameShape(QFrame.HLine)
-    f.setStyleSheet("color:#2a2a2a;")
-    return f
+# ── Status line helper (icon + text, tone-coloured) ───────────────────────────
+_TONE_ICON = {"green": ("circle-check", C["green"]), "red": ("circle-x", C["red"]),
+              "gold": ("triangle-alert", C["gold"]), "accent": ("loader-circle", C["accent"]),
+              None: ("info", C["text_dim"])}
+
+
+class _StatusLine(QWidget):
+    def __init__(self, text: str = "", tone=None, parent=None):
+        super().__init__(parent)
+        lay = hbox(self, spacing=SP["sm"])
+        self._ic = QLabel()
+        self._ic.setFixedSize(16, 16)
+        lay.addWidget(self._ic, 0, Qt.AlignmentFlag.AlignTop)
+        self._lbl = label("", "dim", wrap=True)
+        lay.addWidget(self._lbl, 1)
+        self.set(text, tone)
+
+    def set(self, text: str, tone=None):
+        name, color = _TONE_ICON[tone]
+        self._ic.setPixmap(icons.pixmap(name, color, 16))
+        self._lbl.setText(text)
+        set_tone(self._lbl, tone)
+
+
+def _form_row(g: QGridLayout, row: int, text: str, widget, trailing=None):
+    l = label(text, "dim")
+    l.setMinimumWidth(110)
+    g.addWidget(l, row, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    span = 1 if trailing is not None else 2      # no trailing button → field spans both columns
+    if isinstance(widget, QWidget):
+        g.addWidget(widget, row, 1, 1, span)
+    else:
+        g.addLayout(widget, row, 1, 1, span)
+    if trailing is not None:
+        g.addWidget(trailing, row, 2)
+    g.setColumnStretch(1, 1)
 
 
 # ── Dialog ────────────────────────────────────────────────────────────────────
-DIALOG_STYLE = """
-QDialog {
-    background: #060c14;
-    color: #ccc;
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
-}
-QLabel        { color: #aaa; font-size: 13px; }
-QLabel#title  { color: #38bdf8; font-size: 15px; font-weight: bold; letter-spacing: 2px; }
-QLabel#section{ color: #666;   font-size: 11px; letter-spacing: 2px; padding-top: 6px; }
-QLabel#ok     { color: #38bdf8; }
-QLabel#err    { color: #cc6666; }
-QLabel#warn   { color: #ccaa44; }
-QLineEdit {
-    background: #060c14; border: 1px solid #0d2030; color: #ddd;
-    font-family: 'Courier New'; font-size: 13px;
-    padding: 4px 8px; border-radius: 2px;
-}
-QLineEdit:focus { border-color: #556; }
-QComboBox {
-    background: #060c14; border: 1px solid #0d2030; color: #ccc;
-    font-family: 'Courier New'; font-size: 13px;
-    padding: 4px 8px; border-radius: 2px; min-height: 26px;
-}
-QComboBox QAbstractItemView {
-    background: #060c14; border: 1px solid #1a4060; color: #ccc;
-    selection-background-color: #0a1828;
-}
-QPushButton {
-    background: #1e1e2e; border: 1px solid #3a3a5a; color: #aaa;
-    font-family: 'Courier New'; font-size: 13px;
-    padding: 6px 16px; border-radius: 2px; min-height: 28px;
-}
-QPushButton:hover   { background: #0a1828; color: #ddd; border-color: #38bdf8; }
-QPushButton:pressed { background: #111; }
-QPushButton#sync_btn {
-    background: #1a2e1a; border: 1px solid #38bdf8;
-    color: #38bdf8; font-weight: bold; font-size: 14px;
-}
-QPushButton#sync_btn:hover   { background: #223a22; border-color: #55aa55; }
-QPushButton#sync_btn:disabled { background: #060c14; color: #444; border-color: #2a2a2a; }
-QProgressBar {
-    background: #060c14; border: 1px solid #0d2030; border-radius: 2px;
-    text-align: center; color: #666; font-size: 11px; height: 6px;
-}
-QProgressBar::chunk { background: #38bdf8; border-radius: 2px; }
-"""
-
-
 class SteamSyncDialog(QDialog):
     def __init__(self, game_name: str, exports: dict[str, str], parent=None):
         """
@@ -105,7 +90,6 @@ class SteamSyncDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Sync to Steam")
         self.setMinimumWidth(580)
-        self.setStyleSheet(DIALOG_STYLE)
 
         self._game_name  = game_name
         self._exports    = {k: v for k, v in exports.items()
@@ -114,174 +98,103 @@ class SteamSyncDialog(QDialog):
         self._userdata   = find_steam_userdata()
         self._steam_ids  = list_steam_ids(self._userdata) if self._userdata else []
         self._worker_thread: Optional[QThread] = None
+        self._worker = None
 
         self._build()
         self._start_lookup()
 
     # ── UI construction ───────────────────────────────────────────────────────
     def _build(self):
-        root = QVBoxLayout(self)
-        root.setSpacing(10)
-        root.setContentsMargins(20, 16, 20, 16)
+        root = vbox(self, (SP["xl"], SP["lg"], SP["xl"], SP["lg"]), SP["md"])
 
-        # Title
-        title = QLabel("✦  SYNC TO STEAM")
-        title.setObjectName("title")
-        root.addWidget(title)
-        root.addWidget(_hline())
+        head = hbox(spacing=SP["sm"])
+        ic = QLabel()
+        ic.setPixmap(icons.pixmap("upload", C["accent"], 18))
+        head.addWidget(ic)
+        head.addWidget(label("SYNC TO STEAM", "title"), 1)
+        root.addLayout(head)
+        root.addWidget(label("Installs the exported PNGs into Steam's custom grid folder for the "
+                             "selected account. Steam picks them up within a few seconds.", "dim", wrap=True))
 
         # ── GAME / APP ID ─────────────────────────────────────────────────────
-        sec1 = QLabel("GAME IDENTIFICATION")
-        sec1.setObjectName("section")
-        root.addWidget(sec1)
-
-        # Game name row
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("Game name:"))
+        sec1 = Section("Game identification", collapsible=False)
+        g = grid(h=SP["md"], v=SP["sm"])
         self._name_edit = QLineEdit(self._game_name)
         self._name_edit.setPlaceholderText("Enter game name…")
         self._name_edit.textChanged.connect(self._on_name_changed)
-        name_row.addWidget(self._name_edit, 1)
-        btn_search = QPushButton("Search")
-        btn_search.setFixedWidth(80)
-        btn_search.clicked.connect(self._start_lookup)
-        name_row.addWidget(btn_search)
-        root.addLayout(name_row)
+        btn_search = Button("Search", icon="search", on_click=self._start_lookup)
+        _form_row(g, 0, "Game name", self._name_edit, btn_search)
 
-        # AppID row
-        appid_row = QHBoxLayout()
-        appid_row.addWidget(QLabel("AppID:"))
+        appid_row = hbox(spacing=SP["sm"])
         self._appid_edit = QLineEdit()
         self._appid_edit.setPlaceholderText("Looking up…")
-        self._appid_edit.setFixedWidth(130)
+        self._appid_edit.setFixedWidth(120)
         appid_row.addWidget(self._appid_edit)
-
-        # Candidate picker
         self._candidate_combo = QComboBox()
         self._candidate_combo.setPlaceholderText("— choose from results —")
-        self._candidate_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._candidate_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._candidate_combo.currentIndexChanged.connect(self._on_candidate_picked)
         appid_row.addWidget(self._candidate_combo, 1)
-        root.addLayout(appid_row)
+        _form_row(g, 1, "AppID", appid_row)
+        sec1.body.addLayout(g)
 
-        # Lookup status
-        self._lookup_label = QLabel("Searching Steam Store…")
-        self._lookup_label.setObjectName("warn")
-        root.addWidget(self._lookup_label)
-
-        # Progress bar (hidden after lookup)
+        self._lookup_label = _StatusLine("Searching Steam Store…", "accent")
+        sec1.body.addWidget(self._lookup_label)
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)   # indeterminate
         self._progress.setFixedHeight(6)
-        root.addWidget(self._progress)
-
-        root.addWidget(_hline())
+        self._progress.setTextVisible(False)
+        sec1.body.addWidget(self._progress)
+        root.addWidget(sec1)
 
         # ── STEAM ACCOUNT ─────────────────────────────────────────────────────
-        sec2 = QLabel("STEAM ACCOUNT")
-        sec2.setObjectName("section")
-        root.addWidget(sec2)
-
+        sec2 = Section("Steam account", collapsible=False)
         if self._userdata and self._steam_ids:
-            acc_row = QHBoxLayout()
-            acc_row.addWidget(QLabel("SteamID:"))
+            g = grid(h=SP["md"], v=SP["sm"])
             self._id_combo = QComboBox()
             for sid in self._steam_ids:
                 self._id_combo.addItem(sid)
-            acc_row.addWidget(self._id_combo, 1)
-            root.addLayout(acc_row)
-
-            # Show grid folder path
-            self._folder_label = QLabel()
-            self._folder_label.setStyleSheet(
-                "color:#555; font-size:11px; font-family:'Courier New';")
-            self._folder_label.setWordWrap(True)
+            _form_row(g, 0, "SteamID", self._id_combo)
+            self._folder_label = label("", "muted", elide=True)
+            _form_row(g, 1, "Grid folder", self._folder_label)
             self._id_combo.currentTextChanged.connect(self._update_folder_label)
             self._update_folder_label(self._steam_ids[0])
-            root.addWidget(self._folder_label)
+            sec2.body.addLayout(g)
         else:
-            warn = QLabel("⚠  Steam installation not found.\n"
-                          "Make sure Steam is installed and has been launched at least once.")
-            warn.setObjectName("warn")
-            warn.setWordWrap(True)
-            root.addWidget(warn)
+            sec2.body.addWidget(_StatusLine("Steam installation not found. Make sure Steam is installed "
+                                            "and has been launched at least once.", "gold"))
             self._id_combo = None
-
-        root.addWidget(_hline())
+        root.addWidget(sec2)
 
         # ── FILES TO INSTALL ─────────────────────────────────────────────────
-        sec3 = QLabel("FILES TO INSTALL")
-        sec3.setObjectName("section")
+        sec3 = Section("Files to install", collapsible=False)
+        self._files_widget = QWidget()
+        self._files_layout = grid(self._files_widget, h=SP["md"], v=SP["xs"])
+        self._rebuild_files_list()
+        sec3.body.addWidget(self._files_widget)
         root.addWidget(sec3)
 
-        self._files_widget = QWidget()
-        self._files_layout = QVBoxLayout(self._files_widget)
-        self._files_layout.setSpacing(3)
-        self._files_layout.setContentsMargins(0, 0, 0, 0)
-        self._rebuild_files_list()
-        root.addWidget(self._files_widget)
+        # Result area (hidden until sync runs)
+        self._result_widget = QWidget()
+        self._result_layout = vbox(self._result_widget, spacing=SP["xs"])
+        self._result_widget.setVisible(False)
+        root.addWidget(self._result_widget)
+        # kept for compatibility with older callers that poke the label directly
+        self._result_label = label("", "dim", wrap=True)
+        self._result_label.setVisible(False)
 
-        root.addWidget(_hline())
-
-        # ── CLOUD BACKUP (PimpMySteam token) ─────────────────────────────────
-        drive_sec = QLabel("CLOUD BACKUP")
-        drive_sec.setObjectName("section")
-        root.addWidget(drive_sec)
-
-        # Status row
-        self._drive_status_lbl = QLabel()
-        self._drive_status_lbl.setStyleSheet("font-size:11px; color:#555;")
-        root.addWidget(self._drive_status_lbl)
-
-        # Token row
-        token_row = QHBoxLayout()
-        from app.services.steamkustom_auth import get_token
-        saved_token = get_token() or ""
-        self._drive_token_edit = QLineEdit()
-        self._drive_token_edit.setPlaceholderText(
-            "Paste token from pimpmysteam.com → Settings → Apps…")
-        self._drive_token_edit.setEchoMode(QLineEdit.Password)
-        if saved_token:
-            self._drive_token_edit.setText(saved_token)
-        token_row.addWidget(self._drive_token_edit, 1)
-
-        self._drive_connect_btn = QPushButton("Connect")
-        self._drive_connect_btn.setStyleSheet(
-            "background:#0a2040; border:1px solid #1a4060; color:#60a5fa; "
-            "font-size:12px; padding:5px 14px; border-radius:2px;"
-        )
-        self._drive_connect_btn.clicked.connect(self._drive_connect)
-        token_row.addWidget(self._drive_connect_btn)
-
-        self._drive_upload_btn = QPushButton("⬆ Upload")
-        self._drive_upload_btn.setEnabled(bool(saved_token))
-        self._drive_upload_btn.clicked.connect(self._drive_upload)
-        token_row.addWidget(self._drive_upload_btn)
-
-        root.addLayout(token_row)
-        self._refresh_drive_status()
-
-        root.addWidget(_hline())
+        root.addWidget(Divider())
 
         # ── Buttons ───────────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(self.reject)
-        btn_row.addWidget(btn_cancel)
+        btn_row = hbox(spacing=SP["sm"])
         btn_row.addStretch()
-
-        self._sync_btn = QPushButton("⇪  Sync to Steam")
-        self._sync_btn.setObjectName("sync_btn")
+        btn_cancel = Button("Cancel", on_click=self.reject)
+        btn_cancel.setMinimumWidth(90)
+        btn_row.addWidget(btn_cancel)
+        self._sync_btn = Button("Sync to Steam", "primary", icon="upload", on_click=self._do_sync)
         self._sync_btn.setMinimumWidth(180)
-        self._sync_btn.clicked.connect(self._do_sync)
         btn_row.addWidget(self._sync_btn)
         root.addLayout(btn_row)
-
-        # Result area (hidden until sync runs)
-        self._result_label = QLabel()
-        self._result_label.setWordWrap(True)
-        self._result_label.setVisible(False)
-        root.addWidget(self._result_label)
 
     def _rebuild_files_list(self):
         # Clear
@@ -291,59 +204,74 @@ class SteamSyncDialog(QDialog):
                 item.widget().deleteLater()
 
         _LABELS = {
-            "cover":     "Cover       (600×900)",
-            "vhs_cover": "VHS Cover   (600×900)",
-            "wide":      "Wide Cover  (920×430)",
-            "hero":      "Hero/BG     (3840×1240)",
-            "logo":      "Logo        (1280×720)",
-            "icon":      "Icon        (512×512)",
+            "cover":     ("Cover",      "600×900"),
+            "vhs_cover": ("VHS Cover",  "600×900"),
+            "wide":      ("Wide Cover", "920×430"),
+            "hero":      ("Hero/BG",    "3840×1240"),
+            "logo":      ("Logo",       "1280×720"),
+            "icon":      ("Icon",       "512×512"),
         }
-        _SUFFIX = {
-            "cover": "{id}.png", "vhs_cover": "{id}p.png",
-            "wide": "{id}p.png", "hero": "{id}_hero.png",
-            "logo": "{id}_logo.png", "icon": "{id}_icon.png",
-        }
+        from app.config import grid_filename
         app_id = self._appid_edit.text().strip() or "???"
 
         if not self._exports:
-            lbl = QLabel("No exported files found. Export at least one template first.")
-            lbl.setObjectName("warn")
-            self._files_layout.addWidget(lbl)
+            self._files_layout.addWidget(
+                _StatusLine("No exported files found. Export at least one template first.", "gold"), 0, 0, 1, 4)
             return
 
-        for tpl, src in self._exports.items():
-            row = QHBoxLayout()
-            suffix = _SUFFIX.get(tpl, "").format(id=app_id)
-            row.addWidget(QLabel(f"  {_LABELS.get(tpl, tpl)}"))
-            arrow = QLabel("→")
-            arrow.setStyleSheet("color:#38bdf8;")
-            row.addWidget(arrow)
-            dest_lbl = QLabel(suffix)
-            dest_lbl.setStyleSheet("color:#7788aa; font-size:12px;")
-            row.addWidget(dest_lbl, 1)
-            w = QWidget(); w.setLayout(row)
-            self._files_layout.addWidget(w)
+        for r, (tpl, src) in enumerate(self._exports.items()):
+            name, size = _LABELS.get(tpl, (tpl, ""))
+            ic = QLabel()
+            ic.setPixmap(icons.pixmap("file-image", C["text_dim"], 14))
+            ic.setFixedSize(16, 16)
+            self._files_layout.addWidget(ic, r, 0)
+            self._files_layout.addWidget(label(name, "body"), r, 1)
+            self._files_layout.addWidget(label(size, "muted"), r, 2)
+            arrow = QLabel()
+            arrow.setPixmap(icons.pixmap("arrow-right", C["accent"], 14))
+            arrow.setFixedSize(16, 16)
+            self._files_layout.addWidget(arrow, r, 3)
+            self._files_layout.addWidget(label(grid_filename(app_id, tpl), "mono", elide=True), r, 4)
+        self._files_layout.setColumnStretch(4, 1)
 
     # ── AppID lookup ──────────────────────────────────────────────────────────
     def _start_lookup(self):
         name = self._name_edit.text().strip()
         if not name:
             return
-        self._lookup_label.setText("Searching Steam Store…")
-        self._lookup_label.setObjectName("warn")
-        self._lookup_label.setStyleSheet("")
+        self._lookup_label.set("Searching Steam Store…", "accent")
         self._progress.setVisible(True)
         self._sync_btn.setEnabled(False)
 
-        self._worker = _AppIdWorker(name)
-        self._worker_thread = QThread()
-        self._worker.moveToThread(self._worker_thread)
-        self._worker_thread.started.connect(self._worker.run)
-        self._worker.finished.connect(self._on_lookup_done)
-        self._worker.finished.connect(self._worker_thread.quit)
-        self._worker_thread.start()
+        # Stop a lookup that is still running before starting a new one
+        if self._worker_thread and self._worker_thread.isRunning():
+            self._worker_thread.quit()
+            self._worker_thread.wait(200)
+
+        worker = _AppIdWorker(name)
+        thread = QThread()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_lookup_done, Qt.QueuedConnection)
+        worker.finished.connect(thread.quit, Qt.QueuedConnection)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._worker, self._worker_thread = worker, thread
+        thread.start()
+
+    def closeEvent(self, event):
+        # Don't let a still-running lookup call back into a destroyed dialog
+        if self._worker_thread and self._worker_thread.isRunning():
+            if self._worker:
+                try: self._worker.finished.disconnect()
+                except RuntimeError: pass
+            self._worker_thread.quit()
+            self._worker_thread.wait(500)
+        super().closeEvent(event)
 
     def _on_lookup_done(self, candidates: list, error: str):
+        if self.sender() is not self._worker:
+            return                          # stale result from a superseded lookup
         self._progress.setVisible(False)
         self._candidates = candidates
         self._candidate_combo.blockSignals(True)
@@ -352,9 +280,7 @@ class SteamSyncDialog(QDialog):
         if error:
             self._candidate_combo.blockSignals(False)
             short = error[:100] + ("…" if len(error) > 100 else "")
-            self._lookup_label.setText(
-                f"⚠  Network error — enter AppID manually.\n({short})")
-            self._lookup_label.setStyleSheet("color:#ccaa44;")
+            self._lookup_label.set(f"Network error — enter AppID manually.\n({short})", "gold")
             self._sync_btn.setEnabled(True)   # allow manual AppID entry
             self._rebuild_files_list()
             return
@@ -364,17 +290,20 @@ class SteamSyncDialog(QDialog):
                 self._candidate_combo.addItem(
                     f"{c['name']}  [{c['id']}]", userData=c)
             self._candidate_combo.blockSignals(False)
-            best = candidates[0]
-            self._appid_edit.setText(str(best["id"]))
-            self._lookup_label.setText(
-                f"✔  Found: {best['name']}  (AppID {best['id']})")
-            self._lookup_label.setStyleSheet("color:#38bdf8;")
-            self._sync_btn.setEnabled(True)
+            from app.services.appIdGetter import match_confidence, CONFIDENT_SCORE
+            best, score = match_confidence(candidates, self._name_edit.text())
+            if best is not None and score >= CONFIDENT_SCORE:
+                self._appid_edit.setText(str(best["id"]))
+                self._lookup_label.set(f"Found: {best['name']}  (AppID {best['id']})", "green")
+                self._sync_btn.setEnabled(True)
+            else:
+                self._appid_edit.clear()
+                self._lookup_label.set(f"Not sure — closest is {best['name']}. Pick the game "
+                                       "from the list or type the AppID.", "gold")
+                self._sync_btn.setEnabled(False)
         else:
             self._candidate_combo.blockSignals(False)
-            self._lookup_label.setText(
-                "✖  No results — enter the AppID manually.")
-            self._lookup_label.setStyleSheet("color:#cc6666;")
+            self._lookup_label.set("No results — enter the AppID manually.", "red")
             self._sync_btn.setEnabled(True)
 
         self._rebuild_files_list()
@@ -384,9 +313,7 @@ class SteamSyncDialog(QDialog):
         if data and isinstance(data, dict):
             self._appid_edit.setText(str(data["id"]))
             # Update label to reflect the actually selected result (fixes stale label bug)
-            self._lookup_label.setText(
-                f"✔  Selected: {data['name']}  (AppID {data['id']})")
-            self._lookup_label.setStyleSheet("color:#38bdf8;")
+            self._lookup_label.set(f"Selected: {data['name']}  (AppID {data['id']})", "green")
             self._rebuild_files_list()
 
     def _on_name_changed(self, _text: str):
@@ -396,83 +323,10 @@ class SteamSyncDialog(QDialog):
     def _update_folder_label(self, steam_id: str):
         if self._userdata:
             path = get_grid_folder(self._userdata, steam_id)
-            self._folder_label.setText(f"Grid folder:  {path}")
+            self._folder_label.setText(str(path))
+            self._folder_label.setToolTip(str(path))
 
     # ── Sync ─────────────────────────────────────────────────────────────────
-
-    # ── Cloud Backup helpers (PimpMySteam token) ─────────────────────────────
-
-    def _refresh_drive_status(self):
-        from app.services.steamkustom_auth import get_token, is_connected
-        token = get_token()
-        if token:
-            self._drive_status_lbl.setText("✓ Token saved — uploads use PimpMySteam Drive sync")
-            self._drive_status_lbl.setStyleSheet("font-size:11px; color:#4ade80;")
-            self._drive_connect_btn.setText("Update Token")
-            self._drive_upload_btn.setEnabled(True)
-        else:
-            self._drive_status_lbl.setText("Paste your token to enable Drive backup")
-            self._drive_status_lbl.setStyleSheet("font-size:11px; color:#555;")
-            self._drive_connect_btn.setText("Connect")
-            self._drive_upload_btn.setEnabled(False)
-
-    def _drive_connect(self):
-        """Save the pasted token and verify it."""
-        token = self._drive_token_edit.text().strip()
-        if not token:
-            self._drive_status_lbl.setText("Paste a token first")
-            self._drive_status_lbl.setStyleSheet("font-size:11px; color:#fbbf24;")
-            return
-        self._drive_connect_btn.setEnabled(False)
-        self._drive_status_lbl.setText("Verifying…")
-        self._drive_status_lbl.setStyleSheet("font-size:11px; color:#60a5fa;")
-
-        def _done(ok, user):
-            from PySide6.QtCore import QTimer
-            def _update():
-                self._drive_connect_btn.setEnabled(True)
-                if ok and user:
-                    from app.services.steamkustom_auth import save_token
-                    save_token(token)
-                    name = user.get("username", "Connected")
-                    self._drive_status_lbl.setText(f"✓ Connected as {name}")
-                    self._drive_status_lbl.setStyleSheet("font-size:11px; color:#4ade80;")
-                    self._drive_upload_btn.setEnabled(True)
-                else:
-                    self._drive_status_lbl.setText("✗ Invalid token — get one at pimpmysteam.com/settings")
-                    self._drive_status_lbl.setStyleSheet("font-size:11px; color:#f87171;")
-            QTimer.singleShot(0, _update)
-
-        from app.services.steamkustom_auth import verify_async
-        verify_async(token, _done)
-
-    def _drive_upload(self):
-        self._drive_upload_btn.setEnabled(False)
-        self._drive_status_lbl.setText("Uploading (skipping duplicates)…")
-        self._drive_status_lbl.setStyleSheet("font-size:11px; color:#60a5fa;")
-
-        import threading
-        def _work():
-            from app.services.drive_sync import upload_all
-            from PySide6.QtCore import QTimer
-            r = upload_all()
-            n    = r.get("uploaded", 0)
-            skip = r.get("skipped", 0)
-            errs = r.get("errors", [])
-            if errs:
-                msg, color = f"Error: {errs[0]}", "#f87171"
-            else:
-                parts = [f"✓ {n} uploaded"]
-                if skip:
-                    parts.append(f"{skip} skipped (no change)")
-                msg, color = " · ".join(parts), "#4ade80"
-            def _update():
-                self._drive_status_lbl.setText(msg)
-                self._drive_status_lbl.setStyleSheet(f"font-size:11px; color:{color};")
-                self._drive_upload_btn.setEnabled(True)
-            QTimer.singleShot(0, _update)
-
-        threading.Thread(target=_work, daemon=True).start()
 
     def _do_sync(self):
         # Validate AppID
@@ -495,29 +349,59 @@ class SteamSyncDialog(QDialog):
                                 "No Steam account folder found.")
             return
 
-        result: SyncResult = sync_artwork(
-            app_id=app_id,
-            steam_id=steam_id,
-            userdata_path=self._userdata,
-            exports=self._exports,
-            overwrite=True,
-        )
+        # Run the sync (PNG re-encode of up to 5 files + Steam reload signal)
+        # off the GUI thread; the dialog stays responsive and can't be re-clicked.
+        self._sync_btn.set_loading(True, "Syncing…")
+        exports = dict(self._exports)
+        userdata = self._userdata
 
-        # Show result
-        lines = []
-        for path in result.installed:
-            lines.append(f"<span style='color:#38bdf8'>✔</span>  {os.path.basename(path)}")
-        for tpl in result.skipped:
-            lines.append(f"<span style='color:#666'>—</span>  {tpl}  (skipped)")
-        for err in result.errors:
-            lines.append(f"<span style='color:#cc6666'>✖</span>  {err}")
+        from PySide6.QtCore import QObject, Signal
+        class _Bridge(QObject):
+            done = Signal(object)
+        bridge = _Bridge(self)
+        bridge.done.connect(self._on_sync_done)
 
-        self._result_label.setTextFormat(Qt.RichText)
-        self._result_label.setText("<br>".join(lines))
-        self._result_label.setVisible(True)
+        import threading
+        def _work():
+            try:
+                res = sync_artwork(app_id=app_id, steam_id=steam_id,
+                                   userdata_path=userdata, exports=exports,
+                                   overwrite=True)
+            except Exception as e:
+                res = e
+            bridge.done.emit(res)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_sync_done(self, result):
+        if isinstance(result, Exception):
+            self._sync_btn.set_loading(False)
+            QMessageBox.critical(self, "Sync Failed", str(result))
+            return
+
+        # Show result rows: circle-check / circle-x pixmaps instead of glyph text
+        while self._result_layout.count():
+            item = self._result_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        rows = [("circle-check", C["green"], os.path.basename(p), None) for p in result.installed]
+        rows += [("minus", C["text_dim"], f"{tpl}  (skipped)", None) for tpl in result.skipped]
+        rows += [("circle-x", C["red"], err, "red") for err in result.errors]
+        for icon_name, color, text, tone in rows:
+            row = hbox(spacing=SP["sm"])
+            ic = QLabel()
+            ic.setPixmap(icons.pixmap(icon_name, color, 14))
+            ic.setFixedSize(16, 16)
+            row.addWidget(ic, 0, Qt.AlignmentFlag.AlignTop)
+            row.addWidget(label(text, "body", tone=tone, wrap=True), 1)
+            w = QWidget(); w.setLayout(row)
+            self._result_layout.addWidget(w)
+        self._result_label.setText("\n".join(r[2] for r in rows))
+        self._result_widget.setVisible(True)
 
         if result.success:
-            self._sync_btn.setText("✔  Synced!")
+            self._sync_btn.set_loading(False)
+            self._sync_btn.setText("Synced")
+            self._sync_btn.set_icon("check")
             self._sync_btn.setEnabled(False)
             # Show reminder to restart Steam
             QMessageBox.information(
@@ -526,3 +410,8 @@ class SteamSyncDialog(QDialog):
                 "Your artwork should appear in Steam within a few seconds.\n"
                 "If it doesn't, try scrolling the library or switching views."
             )
+        else:
+            self._sync_btn.set_loading(False)
+            QMessageBox.warning(
+                self, "Sync Failed",
+                "Nothing was installed:\n" + ("\n".join(result.errors) or "unknown error"))

@@ -34,7 +34,7 @@ _META_FIELDS = [
     "mask_target_idx", "mask_mode", "mask_color", "mask_feather",
     "transform_scale_x", "transform_scale_y", "transform_rotate",
     "transform_tx", "transform_ty",
-    "source_path",
+    "source_path", "_group_parent",
 ]
 
 
@@ -131,19 +131,8 @@ def save_project(tab: "WorkspaceTab", path: str) -> None:
         # AppState filter / colour settings
         "film_grain":           st.film_grain,
         "chromatic_aberration": st.chromatic_aberration,
-        "scratches":            st.scratches,
-        "dust":                 st.dust,
-        "edge_wear":            st.edge_wear,
-        "vhs_scanlines":        st.vhs_scanlines,
-        "brightness":           st.brightness,
-        "contrast":             st.contrast,
-        "saturation":           st.saturation,
-        "tint_color":           list(st.tint_color) if st.tint_color else None,
-        "deterioration_preset": st.deterioration_preset,
         "show_platform_bar":    st.show_platform_bar,
         "platform_bar_name":    st.platform_bar_name,
-        "show_spine":           st.show_spine,
-        "spine_text":           st.spine_text,
         # Canvas layer stack
         "layers":               layers_meta,
         # Selection index — nice-to-have, non-critical
@@ -258,25 +247,13 @@ def load_project(tab: "WorkspaceTab", path: str) -> None:
     st.confirmed_app_name      = project.get("confirmed_app_name", "")
     st.film_grain              = project.get("film_grain", 20.0)
     st.chromatic_aberration    = project.get("chromatic_aberration", 10.0)
-    st.scratches               = project.get("scratches", 30.0)
-    st.dust                    = project.get("dust", 20.0)
-    st.edge_wear               = project.get("edge_wear", 25.0)
-    st.vhs_scanlines           = project.get("vhs_scanlines", 0.0)
-    st.brightness              = project.get("brightness", 50.0)
-    st.contrast                = project.get("contrast", 50.0)
-    st.saturation              = project.get("saturation", 50.0)
-    st.deterioration_preset    = project.get("deterioration_preset", "none")
     st.show_platform_bar       = project.get("show_platform_bar", True)
     st.platform_bar_name       = project.get("platform_bar_name", "none")
-    st.show_spine              = project.get("show_spine", True)
-    st.spine_text              = project.get("spine_text", "")
+    # (older projects also carried scratches/dust/spine/… keys — ignored)
 
     # export_paths is ephemeral — always start empty on load so stale
     # paths from a previous session are never accidentally reused.
     st.export_paths = {}
-
-    tc = project.get("tint_color")
-    st.tint_color = tuple(tc) if tc else None
 
     bg = project.get("bg_color", [0, 0, 0])
     st.bg_color = tuple(bg)

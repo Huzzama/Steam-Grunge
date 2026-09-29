@@ -1,112 +1,218 @@
+"""
+Search panel — SteamGridDB search, game list, artwork grid.
+
+Layout (no scrolling, panel is 300–400 px wide):
+    header   STEAM GRUNGE ······ [key status] [key]
+    search   [ field ················ ] [Search]
+    FILTERS  (collapsed)  2×2 grid: Type · Style · Size · NSFW
+    GAMES    list (bounded) / EmptyState  + status line
+    ARTWORK  (stretch) thumbnail grid, pager in the header
+
+Everything visual comes from theme.py through kit widgets and dynamic
+properties; the thumbnail cards paint themselves with theme colours.
+"""
 from __future__ import annotations
-import os, io, requests
+import os
 from typing import Optional, List
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QListWidget, QListWidgetItem, QScrollArea,
-    QFrame, QComboBox, QSizePolicy, QInputDialog, QGridLayout,
+    QWidget, QLabel, QLineEdit, QListWidget, QListWidgetItem, QScrollArea,
+    QFrame, QComboBox, QSizePolicy, QInputDialog, QAbstractItemView,
 )
-from PySide6.QtCore  import Qt, Signal, QObject, Slot, QUrl, QByteArray
-from PySide6.QtGui   import QPixmap, QFont
+from PySide6.QtCore import Qt, Signal, QObject, QUrl, QEvent, QTimer
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from PIL import Image as PILImage  # still used for _on_card_clicked full-res load
 
 from app.services.steamgrid import client as sgdb_client
-from app.services.cache     import get_cache_path
+from app.services.cache     import get_cache_path, prune_cache
+
+from app.ui import icons
+from app.ui.kit import (vbox, hbox, grid, label, Button, IconButton, Section, EmptyState)
+from app.ui.theme import C, R, SP, repolish
+from app.ui.theme import font as theme_font   # debug placeholder pixmaps only
+
+
+# ── Background work → main-thread callback ─────────────────────────────────────
+class _AsyncBridge(QObject):
+    """Run fn() in a daemon thread; call on_done(result) on the GUI thread."""
+    _done = Signal(object)
+
+    def __init__(self, parent, fn, on_done):
+        super().__init__(parent)
+        self._fn, self._on_done = fn, on_done
+        self._done.connect(self._finish)
+
+    def start(self):
+        import threading
+        def _run():
+            try:
+                res = self._fn()
+            except Exception as e:
+                res = e
+            self._done.emit(res)
+        threading.Thread(target=_run, daemon=True).start()
+        return self
+
+    def _finish(self, res):
+        try:
+            self._on_done(res)
+        finally:
+            self.deleteLater()
 
 
 # ── Single thumbnail card ──────────────────────────────────────────────────────
 class ArtworkCard(QFrame):
+    """
+    Self-painted thumbnail: 1 px border (hover → border_strong, busy → accent),
+    pixmap centred and scaled to fit, placeholder / error icon otherwise.
+    Size is set by the panel from the viewport width (see _relayout_cards).
+    """
     clicked = Signal(str)   # full-res URL
+
+    ASPECT = 1.45           # h / w  (600×900 grids ≈ 1.5, keeps heroes readable)
 
     def __init__(self, full_url: str, parent=None):
         super().__init__(parent)
         self.full_url = full_url
-        self.setFixedSize(145, 210)
+        self._pix: Optional[QPixmap] = None
+        self._error = False
+        self._busy = False
+        self._hover = False
+        self.setProperty("surface", "card")
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("""
-            QFrame { background:#111; border:1px solid #0d2030; border-radius:3px; }
-            QFrame:hover { border:1px solid #5a7aaa; }
-        """)
-        self._lbl = QLabel("…", self)
-        self._lbl.setAlignment(Qt.AlignCenter)
-        self._lbl.setGeometry(1, 1, 143, 208)
-        self._lbl.setStyleSheet("color:#444; font-size:12px; background:transparent;")
+        self.setAttribute(Qt.WA_Hover, True)
+        self.set_card_width(120)
 
+    # ── geometry ──
+    def set_card_width(self, w: int):
+        self.setFixedSize(w, int(w * self.ASPECT))
+
+    # ── content ──
     def set_pixmap_from_bytes(self, data: bytes):
         """Called in main thread — totally safe."""
         try:
             pix = QPixmap()
             pix.loadFromData(data)
             if not pix.isNull():
-                scaled = pix.scaled(143, 208, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self._lbl.setPixmap(scaled)
-                self._lbl.setText("")
+                self._pix = pix
+                self._error = False
+                self.setToolTip("")
+                self.update()
             else:
                 self.set_error()
         except Exception:
             self.set_error()
 
     def set_error(self):
-        self._lbl.setText("✕")
-        self._lbl.setStyleSheet("color:#553333; font-size:14px; background:transparent;")
+        self._error = True
+        self._pix = None
+        self.setToolTip("Image could not be loaded")
+        self.update()
 
+    def set_busy(self, busy: bool):
+        """Dim the card while its full-res image is downloading."""
+        self._busy = busy
+        self.setEnabled(not busy)
+        self.setProperty("active", "true" if busy else "false")
+        repolish(self)
+
+    # ── events ──
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
             self.clicked.emit(self.full_url)
         super().mousePressEvent(e)
 
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+        super().enterEvent(e)
 
-# ── Panel styles ───────────────────────────────────────────────────────────────
-STYLE = """
-QWidget#SearchPanel { background:#161616; border-right:1px solid #2a2a2a; }
-QLineEdit {
-    background:#0d0d0d; border:1px solid #0d2030; border-radius:3px;
-    color:#ccc; padding:5px 8px; font-family:'Courier New'; font-size:14px;
-}
-QLineEdit:focus { border:1px solid #666; }
-QPushButton {
-    background:#252525; border:1px solid #404040; color:#bbb;
-    padding:5px 10px; font-family:'Courier New'; font-size:13px; border-radius:2px;
-}
-QPushButton:hover { background:#303030; border-color:#666; color:#fff; }
-QPushButton#primary { background:#1a1a2e; border-color:#3a3a6e; color:#8888cc; }
-QPushButton#primary:hover { background:#22224a; color:#aaaaff; }
-QPushButton#page_btn { padding:2px 4px; font-size:12px; min-width:30px; max-width:30px; }
-QPushButton#page_btn[current="true"] { background:#1e1e3a; color:#8888dd; border-color:#4444aa; }
-QComboBox {
-    background:#0d0d0d; border:1px solid #0d2030; color:#aaa;
-    padding:3px 6px; font-family:'Courier New'; font-size:12px; border-radius:2px;
-}
-QComboBox::drop-down { border:none; }
-QComboBox QAbstractItemView { background:#1a1a1a; color:#ccc; selection-background-color:#0a1828; }
-QLabel#hdr { color:#666; font-size:12px; font-family:'Courier New'; letter-spacing:2px; padding:3px 0; }
-QListWidget {
-    background:#0d0d0d; border:1px solid #0d2030; color:#ccc;
-    font-family:'Courier New'; font-size:14px;
-}
-QListWidget::item { padding:5px 8px; border-bottom:1px solid #1e1e1e; }
-QListWidget::item:selected { background:#1e1e3a; color:#8888dd; }
-QListWidget::item:hover { background:#060c14; }
-"""
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+        super().leaveEvent(e)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = self.rect().adjusted(0, 0, -1, -1)
+        if self._busy:
+            border = C["accent"]
+        elif self._hover:
+            border = C["border_strong"]
+        elif self._error:
+            border = C["red_dim"]
+        else:
+            border = C["border"]
+        p.setPen(QPen(QColor(border), 1))
+        p.setBrush(QColor(C["surface"]))
+        p.drawRoundedRect(r, R["md"], R["md"])
+
+        inner = r.adjusted(2, 2, -1, -1)
+        if self._pix is not None:
+            scaled = self._pix.scaled(inner.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            x = inner.x() + (inner.width() - scaled.width()) // 2
+            y = inner.y() + (inner.height() - scaled.height()) // 2
+            if self._busy:
+                p.setOpacity(0.45)
+            p.drawPixmap(x, y, scaled)
+        else:
+            name, color = ("circle-x", C["red"]) if self._error else ("image", C["text_muted"])
+            pm = icons.pixmap(name, color, 20)
+            w, h = int(pm.width() / pm.devicePixelRatio()), int(pm.height() / pm.devicePixelRatio())
+            p.drawPixmap(inner.x() + (inner.width() - w) // 2, inner.y() + (inner.height() - h) // 2, pm)
+        p.end()
+
+
+class _StatusDot(QWidget):
+    """8 px filled circle in a theme colour (API-key indicator)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._color = C["red"]
+        self.setFixedSize(8, 8)
+
+    def set_color(self, hexv: str):
+        self._color = hexv
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(self._color))
+        p.drawEllipse(self.rect())
+        p.end()
+
+
+class _WheelGuard(QObject):
+    """Absorbs wheel events so scrolling over a combo never changes it."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel:
+            event.ignore()
+            return True
+        return False
 
 
 # ── Main panel ─────────────────────────────────────────────────────────────────
 class SearchPanel(QWidget):
     """
-    Emits artwork_layer_ready(local_path, game_name) so mainWindow
-    can call canvas.add_image_layer(path, name) — making it draggable.
-    Also keeps artwork_selected(pil_img, name) for backward compat.
+    Emits artwork_layer_ready(local_path, game_name) so the tab can call
+    canvas.add_image_layer(path, name) — making it draggable.
     """
-    artwork_selected    = Signal(object, str)   # PIL image, name (bg compat)
     artwork_layer_ready = Signal(str,    str)   # local_path, game_name
+    game_selected       = Signal(str)           # game name picked in the list
+
+    LIMIT = 20                 # artwork per page
+    CARD_MIN_W = 108           # → 2 columns at 300 px, 3 columns at ≥ ~390 px
+    CARD_MAX_COLS = 4
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SearchPanel")
-        self.setStyleSheet(STYLE)
 
         self._game_results  = []
         self._selected_game = None
@@ -115,94 +221,54 @@ class SearchPanel(QWidget):
         self._cards: List[ArtworkCard] = []
         # FIX (Issue 1): use set so .discard() works correctly (was list before)
         self._pending_replies: set = set()
+        self._cols = 2
 
         # QNetworkAccessManager lives on main thread — fully safe, no segfaults
         self._nam = QNetworkAccessManager(self)
-        # Attach API key header to every request
         self._build_ui()
         # FIX (Issue 3 secondary): install wheel guards on all filter combos so
         # scrolling over them doesn't fire _on_filter_changed or steal canvas focus
         self._install_combo_guards()
+        self._refresh_key_status()
+        self._show_art_placeholder("image", "No game selected", "Pick a game to browse its artwork")
 
     # ── UI construction ────────────────────────────────────────────────────────
     def _build_ui(self):
-        # Outer layout — holds the scrollable top section + fixed artwork area
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        root = vbox(self, (SP["md"], SP["md"], SP["md"], SP["md"]), SP["sm"])
 
-        # ── Scrollable top section (title → filters) ───────────────────────
-        top_scroll = QScrollArea()
-        top_scroll.setWidgetResizable(True)
-        top_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        top_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        top_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        top_scroll.setStyleSheet("""
-            QScrollArea { border: none; background: transparent; }
-            QScrollBar:vertical {
-                background: #040608; width: 6px; margin: 0;
-            }
-            QScrollBar::handle:vertical {
-                background: #333; border-radius: 3px; min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover { background: #555; }
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical { height: 0; }
-        """)
+        # ── Header: title · key status · key button ────────────────────────
+        head = hbox(spacing=SP["sm"])
+        head.addWidget(label("STEAM GRUNGE", "title"), 1)
+        self.api_dot = _StatusDot()
+        head.addWidget(self.api_dot)
+        self.api_status = label("NO KEY", "muted")
+        head.addWidget(self.api_status)
+        self.api_btn = IconButton("key-round", "Set SteamGridDB API key", on_click=self._set_api_key)
+        head.addWidget(self.api_btn)
+        root.addLayout(head)
 
-        top_widget = QWidget()
-        top_widget.setStyleSheet("background: transparent;")
-        root = QVBoxLayout(top_widget)
-        root.setContentsMargins(10, 10, 10, 6)
-        root.setSpacing(6)
-
-        # Title
-        t = QLabel("STEAM GRUNGE")
-        t.setStyleSheet("font-family:'Courier New'; font-size:15px; font-weight:bold; "
-                        "color:#aaa; letter-spacing:3px; padding-bottom:4px; "
-                        "border-bottom:1px solid #2a2a2a;")
-        root.addWidget(t)
-
-        # API key
-        self.api_btn = QPushButton("⚙ Set API Key")
-        self.api_btn.setObjectName("primary")
-        self.api_btn.clicked.connect(self._set_api_key)
-        root.addWidget(self.api_btn)
-
-        # Search
-        root.addWidget(self._hdr("SEARCH STEAMGRIDDB"))
-        row = QHBoxLayout()
+        # ── Search row ─────────────────────────────────────────────────────
+        row = hbox(spacing=SP["sm"])
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search a game…")
+        self.search_input.setClearButtonEnabled(True)
         self.search_input.returnPressed.connect(self._search)
-        row.addWidget(self.search_input)
+        row.addWidget(self.search_input, 1)
+        self.search_btn = Button("Search", "default", icon="search", on_click=self._search)
+        self.search_btn.setFixedWidth(96)
+        row.addWidget(self.search_btn)
         root.addLayout(row)
 
-        self.search_btn = QPushButton("SEARCH")
-        self.search_btn.clicked.connect(self._search)
-        root.addWidget(self.search_btn)
+        # ── Filters (collapsed by default) ─────────────────────────────────
+        self.filters_section = Section("Filters", expanded=False)
+        fg = grid(h=SP["sm"], v=SP["sm"])
+        fg.setColumnStretch(0, 1)
+        fg.setColumnStretch(1, 1)
 
-        # Results list
-        root.addWidget(self._hdr("RESULTS"))
-        self.game_list = QListWidget()
-        self.game_list.setMaximumHeight(180)
-        self.game_list.itemClicked.connect(self._on_game_selected)
-        root.addWidget(self.game_list)
-
-        # ── Filters ────────────────────────────────────────
-        root.addWidget(self._hdr("FILTERS"))
-        filter_grid = QGridLayout()
-        filter_grid.setSpacing(4)
-
-        # Asset type
-        filter_grid.addWidget(QLabel("Type"), 0, 0)
         self.type_combo = QComboBox()
         self.type_combo.addItems(["Grids", "Heroes", "Logos", "Icons"])
         self.type_combo.currentIndexChanged.connect(self._on_filter_changed)
-        filter_grid.addWidget(self.type_combo, 1, 0)
 
-        # Style
-        filter_grid.addWidget(QLabel("Style"), 0, 1)
         self.style_combo = QComboBox()
         self.style_combo.addItem("Any",        None)
         self.style_combo.addItem("Alternate",  "alternate")
@@ -211,10 +277,7 @@ class SearchPanel(QWidget):
         self.style_combo.addItem("Material",   "material")
         self.style_combo.addItem("No logo",    "no_logo")
         self.style_combo.currentIndexChanged.connect(self._on_filter_changed)
-        filter_grid.addWidget(self.style_combo, 1, 1)
 
-        # Dimensions
-        filter_grid.addWidget(QLabel("Size"), 0, 2)
         self.dim_combo = QComboBox()
         self.dim_combo.addItem("Any",    None)
         self.dim_combo.addItem("600×900",  "600x900")
@@ -222,79 +285,86 @@ class SearchPanel(QWidget):
         self.dim_combo.addItem("460×215",  "460x215")
         self.dim_combo.addItem("342×482",  "342x482")
         self.dim_combo.currentIndexChanged.connect(self._on_filter_changed)
-        filter_grid.addWidget(self.dim_combo, 1, 2)
 
-        # NSFW
-        filter_grid.addWidget(QLabel("NSFW"), 0, 3)
         self.nsfw_combo = QComboBox()
         self.nsfw_combo.addItems(["Off", "On", "Any"])
         self.nsfw_combo.currentIndexChanged.connect(self._on_filter_changed)
-        filter_grid.addWidget(self.nsfw_combo, 1, 3)
 
-        root.addLayout(filter_grid)
-        root.addStretch(0)
+        cells = [("Type", self.type_combo), ("Style", self.style_combo),
+                 ("Size", self.dim_combo), ("NSFW", self.nsfw_combo)]
+        for i, (title, combo) in enumerate(cells):
+            combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            combo.setMinimumWidth(0)
+            cell = QWidget()
+            cl = vbox(cell, (0, 0, 0, 0), SP["xs"])
+            cl.addWidget(label(title.upper(), "eyebrow"))
+            cl.addWidget(combo)
+            fg.addWidget(cell, i // 2, i % 2)
+        self.filters_section.body.addLayout(fg)
+        root.addWidget(self.filters_section)
 
-        top_scroll.setWidget(top_widget)
-        outer.addWidget(top_scroll, stretch=0)
+        # ── Games ──────────────────────────────────────────────────────────
+        self.games_section = Section("Games", collapsible=False)
+        self.game_list = QListWidget()
+        self.game_list.setMinimumHeight(88)           # ~4 rows when space is tight
+        self.game_list.setMaximumHeight(136)          # ~6 rows
+        self.game_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.game_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.game_list.setTextElideMode(Qt.ElideRight)
+        self.game_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.game_list.itemClicked.connect(self._on_game_selected)
+        self.game_list.setVisible(False)
 
-        # ── Artwork section (fixed below, takes remaining space) ───────────
-        artwork_widget = QWidget()
-        artwork_widget.setStyleSheet("background: #161616;")
-        artwork_layout = QVBoxLayout(artwork_widget)
-        artwork_layout.setContentsMargins(10, 0, 10, 0)
-        artwork_layout.setSpacing(4)
+        self.game_empty = QFrame()
+        self.game_empty.setProperty("surface", "inset")
+        self.game_empty.setMinimumHeight(88)
+        self.game_empty.setMaximumHeight(136)
+        ge = vbox(self.game_empty, (0, 0, 0, 0), 0)
+        self._game_empty_state = EmptyState("search", "Search a game", "Results appear here")
+        ge.addWidget(self._game_empty_state)
 
-        artwork_layout.addWidget(self._hdr("ARTWORK"))
+        self.games_section.body.addWidget(self.game_empty)
+        self.games_section.body.addWidget(self.game_list)
+        self.status_lbl = label("", "muted", elide=True)
+        self.status_lbl.setVisible(False)
+        self.games_section.body.addWidget(self.status_lbl)
+        root.addWidget(self.games_section)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea{border:none;background:#0a0a0a;}")
+        # ── Artwork (takes the remaining height) ───────────────────────────
+        pager = QWidget()
+        pl = hbox(pager, (0, 0, 0, 0), SP["xs"])
+        self.prev_btn = IconButton("chevron-left", "Previous page", on_click=self._prev_page)
+        pl.addWidget(self.prev_btn)
+        self.page_info = label("", "mono", align=Qt.AlignCenter)
+        self.page_info.setMinimumWidth(44)
+        pl.addWidget(self.page_info)
+        self.next_btn = IconButton("chevron-right", "Next page", on_click=self._next_page)
+        pl.addWidget(self.next_btn)
+
+        self.artwork_section = Section("Artwork", collapsible=False, trailing=pager)
+        self.artwork_section.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self._thumb_scroll = QScrollArea()
+        self._thumb_scroll.setWidgetResizable(True)
+        self._thumb_scroll.setFrameShape(QFrame.NoFrame)
+        self._thumb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._thumb_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._thumb_scroll.setMinimumHeight(110)
+        self._thumb_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.thumb_container = QWidget()
-        self.thumb_container.setStyleSheet("background:#0a0a0a;")
-        self.grid_layout = QGridLayout(self.thumb_container)
-        self.grid_layout.setSpacing(5)
-        self.grid_layout.setContentsMargins(4, 4, 4, 4)
-        scroll.setWidget(self.thumb_container)
-        artwork_layout.addWidget(scroll, stretch=1)
+        self.grid_layout = grid(self.thumb_container, (0, 0, SP["xs"], 0), SP["sm"], SP["sm"])
+        self.grid_layout.setAlignment(Qt.AlignTop)
+        self._thumb_scroll.setWidget(self.thumb_container)
+        self._thumb_scroll.viewport().installEventFilter(self)
+        self.artwork_section.body.addWidget(self._thumb_scroll, 1)
 
-        outer.addWidget(artwork_widget, stretch=1)
+        self.art_status = label("", "muted", elide=True)
+        self.art_status.setVisible(False)
+        self.artwork_section.body.addWidget(self.art_status)
+        root.addWidget(self.artwork_section, 1)
 
-        # Keep a reference so pagination can be added below artwork_widget
-        self._outer_layout = outer
-        self._artwork_layout = artwork_layout
-
-        # ── Pagination ─────────────────────────────────────
-        page_widget = QWidget()
-        page_widget.setFixedHeight(34)
-        self.page_bar = QHBoxLayout(page_widget)
-        self.page_bar.setContentsMargins(0, 0, 0, 0)
-        self.page_bar.setSpacing(2)
-
-        self.prev_btn = QPushButton("◀")
-        self.prev_btn.setObjectName("page_btn")
-        self.prev_btn.setFixedSize(30, 28)
-        self.prev_btn.clicked.connect(self._prev_page)
-        self.page_bar.addWidget(self.prev_btn)
-
-        self.page_labels: List[QPushButton] = []
-        self._page_btn_container = QHBoxLayout()
-        self._page_btn_container.setSpacing(2)
-        self._page_btn_container.setContentsMargins(0, 0, 0, 0)
-        self.page_bar.addLayout(self._page_btn_container)
-
-        self.next_btn = QPushButton("▶")
-        self.next_btn.setObjectName("page_btn")
-        self.next_btn.setFixedSize(30, 28)
-        self.next_btn.clicked.connect(self._next_page)
-        self.page_bar.addWidget(self.next_btn)
-
-        self.page_info = QLabel("")
-        self.page_info.setStyleSheet("color:#555; font-size:12px; font-family:'Courier New'; padding-left:4px;")
-        self.page_bar.addWidget(self.page_info, stretch=1)
-
-        artwork_layout.addWidget(page_widget)
+        self._rebuild_page_buttons()
 
     def _install_combo_guards(self):
         """
@@ -303,26 +373,49 @@ class SearchPanel(QWidget):
           1. Scrolling over them never fires _on_filter_changed (no spurious reloads)
           2. They never steal keyboard focus from the canvas
         """
-        from PySide6.QtCore import QObject, QEvent
-
-        class _WheelGuard(QObject):
-            def eventFilter(self, obj, event):
-                if event.type() == QEvent.Wheel:
-                    event.ignore()
-                    return True
-                return False
-
         for combo in [self.type_combo, self.style_combo,
                       self.dim_combo, self.nsfw_combo]:
             guard = _WheelGuard(combo)
             combo.installEventFilter(guard)
+            combo.setFocusPolicy(Qt.StrongFocus)
             # Keep a reference so the guard isn't garbage-collected
             if not hasattr(combo, "_wheel_guards"):
                 combo._wheel_guards = []
             combo._wheel_guards.append(guard)
 
-    def _hdr(self, text: str) -> QLabel:
-        l = QLabel(text); l.setObjectName("hdr"); return l
+    # ── small state helpers ────────────────────────────────────────────────────
+    def _refresh_key_status(self):
+        has_key = bool(sgdb_client.api_key and str(sgdb_client.api_key).strip())
+        self.api_dot.set_color(C["green"] if has_key else C["red"])
+        self.api_status.setText("KEY SET" if has_key else "NO KEY")
+        self.api_status.setProperty("tone", "green" if has_key else "red")
+        repolish(self.api_status)
+        self.api_btn.setToolTip("Change SteamGridDB API key" if has_key else "Set SteamGridDB API key")
+
+    def _set_status(self, text: str, tone: Optional[str] = None):
+        """Muted line under the games list ("Searching…", "No results", errors)."""
+        self.status_lbl.setText(text)
+        self.status_lbl.setProperty("tone", tone or "")
+        repolish(self.status_lbl)
+        self.status_lbl.setVisible(bool(text))
+
+    def _set_art_status(self, text: str, tone: Optional[str] = None):
+        self.art_status.setText(text)
+        self.art_status.setProperty("tone", tone or "")
+        repolish(self.art_status)
+        self.art_status.setVisible(bool(text))
+
+    def _show_game_list(self, show: bool):
+        self.game_list.setVisible(show)
+        self.game_empty.setVisible(not show)
+
+    def _show_art_placeholder(self, icon: str, title: str, subtitle: str = ""):
+        ph = EmptyState(icon, title, subtitle)
+        ph.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        cols = max(1, self._cols)
+        for c in range(cols):
+            self.grid_layout.setColumnStretch(c, 1)
+        self.grid_layout.addWidget(ph, 0, 0, 1, cols)
 
     # ── Slots ──────────────────────────────────────────────────────────────────
     def _set_api_key(self):
@@ -332,14 +425,16 @@ class SearchPanel(QWidget):
             text=sgdb_client.api_key)   # FIX (Issue 5): pre-fill with persisted key
         if ok and key.strip():
             sgdb_client.set_api_key(key.strip())
-            self.api_btn.setText("✔ API Key Set")
+            self._refresh_key_status()
+            if self.status_lbl.property("tone") == "red":
+                self._set_status("")
 
             # FIX (Issue 1): purge any zero-byte or corrupted cache entries that
             # were written during anonymous (401) requests so they don't block
             # the fresh load below.
             self._purge_corrupt_cache()
 
-            # FIX (Issue 1): reload artwork immediately so existing ✕ cards
+            # FIX (Issue 1): reload artwork immediately so existing error cards
             # are replaced without requiring the user to click the game again.
             if self._selected_game:
                 self._current_page = 0
@@ -367,17 +462,48 @@ class SearchPanel(QWidget):
     def _search(self):
         q = self.search_input.text().strip()
         if not q: return
+        if not sgdb_client.api_key:
+            self.game_list.clear()
+            self._show_game_list(False)
+            self._set_status("Set your SteamGridDB API key first (key button above)", "red")
+            return
         self.game_list.clear()
-        results = sgdb_client.search_games(q)
-        self._game_results = results
-        for g in results:
-            item = QListWidgetItem(g["name"])
-            item.setData(Qt.UserRole, g["id"])
-            self.game_list.addItem(item)
+        self._show_game_list(False)
+        self.game_list.setEnabled(False)
+        self.search_btn.set_loading(True)
+        self._set_status("Searching…", "accent")
+        self._search_gen = getattr(self, "_search_gen", 0) + 1
+        gen = self._search_gen
+
+        def _done(results):
+            if gen != self._search_gen:
+                return                      # a newer search superseded this one
+            self.search_btn.set_loading(False)
+            self.game_list.setEnabled(True)
+            self.game_list.clear()
+            if isinstance(results, Exception):
+                self._set_status(f"Search failed: {results}", "red")
+                return
+            self._game_results = results
+            if not results:
+                self._set_status("No results", None)
+                return
+            for g in results:
+                item = QListWidgetItem(g["name"])
+                item.setData(Qt.UserRole, g["id"])
+                item.setToolTip(g["name"])
+                self.game_list.addItem(item)
+            self._set_status(f"{len(results)} game{'s' if len(results) != 1 else ''}")
+            self._show_game_list(True)
+
+        _AsyncBridge(self, lambda: sgdb_client.search_games(q), _done).start()
 
     def _on_game_selected(self, item: QListWidgetItem):
+        if item.data(Qt.UserRole) is None:
+            return                          # placeholder row (never happens now, kept for safety)
         self._selected_game = {"id": item.data(Qt.UserRole), "name": item.text()}
         self._current_page  = 0
+        self.game_selected.emit(item.text())
         self._load_artwork()
 
     def _on_filter_changed(self):
@@ -411,41 +537,59 @@ class SearchPanel(QWidget):
         nsfw_map   = {"Off": "false", "On": "true", "Any": "any"}
         nsfw_val   = nsfw_map.get(self.nsfw_combo.currentText(), "false")
 
-        items, total = sgdb_client.get_grids(
-            self._selected_game["id"],
-            asset_type = asset_type,
-            styles     = [style_val] if style_val else None,
-            dimensions = [dim_val]   if dim_val   else None,
-            nsfw       = nsfw_val,
-            page       = self._current_page,
-            limit      = 20,
-        )
+        game_id = self._selected_game["id"]
+        page    = self._current_page
+        self._load_gen = getattr(self, "_load_gen", 0) + 1
+        gen = self._load_gen
 
-        LIMIT = 20
-        self._total_pages = max(1, (total + LIMIT - 1) // LIMIT)
+        self._clear_thumbs()
+        self._set_art_status("")
+        self._show_art_placeholder("loader-circle", "Loading artwork…", self._selected_game["name"])
+
+        def _fetch():
+            return sgdb_client.get_grids(
+                game_id,
+                asset_type = asset_type,
+                styles     = [style_val] if style_val else None,
+                dimensions = [dim_val]   if dim_val   else None,
+                nsfw       = nsfw_val,
+                page       = page,
+                limit      = self.LIMIT,
+            )
+
+        _AsyncBridge(self, _fetch,
+                     lambda res: self._on_artwork_loaded(res, gen)).start()
+
+    def _on_artwork_loaded(self, res, gen: int):
+        if gen != getattr(self, "_load_gen", 0):
+            return                          # user moved on to another page/game
+        if isinstance(res, Exception):
+            items, total = [], 0
+        else:
+            items, total = res
+
+        self._total_pages = max(1, (total + self.LIMIT - 1) // self.LIMIT)
         self._rebuild_page_buttons()
         self._clear_thumbs()
+        prune_cache()   # keep data/cache bounded — thumbnails are re-fetched on demand
 
         if not items:
-            placeholder = QLabel("No results.\nCheck API key or try\ndifferent filters.")
-            placeholder.setAlignment(Qt.AlignCenter)
-            placeholder.setStyleSheet("color:#555; font-size:13px; font-family:'Courier New';")
-            self.grid_layout.addWidget(placeholder, 0, 0, 1, 2)
+            self._show_art_placeholder("image", "No artwork", "Check the API key or try other filters")
             return
 
-        # Build cards in a 2-column grid
-        COLS = 2
-        for idx, item in enumerate(items):
+        self._populate_cards(items)
+        self.page_info.setToolTip(f"Page {self._current_page + 1} of {self._total_pages} · {total} total")
+
+    def _populate_cards(self, items) -> None:
+        """Create cards for `items`, lay them out, and start thumbnail fetches."""
+        for item in items:
             full_url  = item.get("url", "")
             thumb_url = item.get("thumb", full_url)
             if not full_url:
                 continue
-
             card = ArtworkCard(full_url)
             card.clicked.connect(self._on_card_clicked)
             self._cards.append(card)
-            row, col = divmod(idx, COLS)
-            self.grid_layout.addWidget(card, row, col)
 
             # Check disk cache first — instant display
             local = get_cache_path(thumb_url)
@@ -459,8 +603,45 @@ class SearchPanel(QWidget):
 
             # Fetch via QNetworkAccessManager (main thread, no threads, no segfault)
             self._fetch_thumb(card, thumb_url, full_url)
+        self._relayout_cards()
 
-        self.page_info.setText(f"pg {self._current_page+1}/{self._total_pages}  ({total} total)")
+    # ── responsive grid ───────────────────────────────────────────────────────
+    def eventFilter(self, obj, event):
+        if obj is self._thumb_scroll.viewport() and event.type() == QEvent.Resize:
+            QTimer.singleShot(0, self._relayout_cards)
+        return super().eventFilter(obj, event)
+
+    def _grid_metrics(self) -> tuple[int, int]:
+        """(columns, card width) for the current viewport width."""
+        # Always reserve the scrollbar width so the column count does not
+        # flip-flop when the bar appears/disappears.
+        vw = self._thumb_scroll.viewport().width()
+        vbar = self._thumb_scroll.verticalScrollBar()
+        if not vbar.isVisible():
+            vw -= vbar.sizeHint().width()
+        m = self.grid_layout.contentsMargins()
+        avail = max(0, vw - m.left() - m.right())
+        sp = self.grid_layout.horizontalSpacing()
+        cols = max(2, min(self.CARD_MAX_COLS, (avail + sp) // (self.CARD_MIN_W + sp)))
+        card_w = max(60, (avail - sp * (cols - 1)) // cols)
+        return cols, card_w
+
+    def _relayout_cards(self):
+        cols, card_w = self._grid_metrics()
+        self._cols = cols
+        if not self._cards:
+            return
+        # detach every card, then re-add in the new column count
+        for c in self._cards:
+            self.grid_layout.removeWidget(c)
+        for idx, c in enumerate(self._cards):
+            c.set_card_width(card_w)
+            row, col = divmod(idx, cols)
+            self.grid_layout.addWidget(c, row, col)
+        for c in range(cols):
+            self.grid_layout.setColumnStretch(c, 1)
+        for c in range(cols, self.CARD_MAX_COLS + 1):
+            self.grid_layout.setColumnStretch(c, 0)
 
     def _fetch_thumb(self, card: ArtworkCard, thumb_url: str, full_url: str):
         """
@@ -472,7 +653,7 @@ class SearchPanel(QWidget):
           401/403 responses (it got a response — just not the right one).
           This prevents HTML error pages from being written to disk as fake images.
         - Response bytes are validated as real image data via QPixmap before
-          caching, so corrupt cache entries can never cause permanent ✕ cards.
+          caching, so corrupt cache entries can never cause permanent error cards.
         """
         # FIX: SteamGridDB CDN (cdn2.steamgriddb.com) returns 401 if Bearer auth
         # is sent — CDN images are public and must be fetched without auth headers.
@@ -558,35 +739,17 @@ class SearchPanel(QWidget):
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             if item and item.widget():
-                item.widget().deleteLater()
+                w = item.widget()
+                w.hide()                    # so late replies see isHidden()
+                w.setParent(None)
+                w.deleteLater()
 
     def _rebuild_page_buttons(self):
-        # Clear old buttons
-        while self._page_btn_container.count():
-            item = self._page_btn_container.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
-        self.page_labels.clear()
-
-        # Show up to 7 page buttons around current
+        """Update the pager (chevrons + 'cur/total' label) for the current page."""
         total = self._total_pages
         cur   = self._current_page
-        pages = self._visible_pages(cur, total)
-        prev_p = None
-        for p in pages:
-            if prev_p is not None and p > prev_p + 1:
-                dot = QLabel("…")
-                dot.setStyleSheet("color:#444; font-size:12px;")
-                self._page_btn_container.addWidget(dot)
-            btn = QPushButton(str(p + 1))
-            btn.setObjectName("page_btn")
-            btn.setProperty("current", p == cur)
-            btn.setFixedSize(30, 28)
-            btn.clicked.connect(lambda checked, pg=p: self._goto_page(pg))
-            self._page_btn_container.addWidget(btn)
-            self.page_labels.append(btn)
-            prev_p = p
-
+        self.page_info.setText(f"{cur + 1}/{total}")
+        self.page_info.setToolTip(f"Page {cur + 1} of {total}")
         self.prev_btn.setEnabled(cur > 0)
         self.next_btn.setEnabled(cur < total - 1)
 
@@ -605,41 +768,81 @@ class SearchPanel(QWidget):
     # ── Artwork click → canvas layer ──────────────────────────────────────────
     def _on_card_clicked(self, full_url: str):
         """
-        Download full-res image and emit as canvas layer (draggable).
-
-        FIX (Issue 1): After download, verify the file is a real image before
-        emitting.  sgdb_client.download_image() already cleans up zero-byte
-        files; this catches the case where a CDN returns a small HTML error
-        page with a 200 status, which would otherwise be cached and opened
-        as a corrupt PIL image.
+        Download the full-res image in the background, validate it, then emit
+        it as a canvas layer. The card is highlighted while downloading.
         """
-        from app.services.cache import get_cache_path
-        local = get_cache_path(full_url)
+        card = next((c for c in self._cards if c.full_url == full_url), None)
+        name = self._selected_game["name"] if self._selected_game else ""
+        if card:
+            card.set_busy(True)
 
-        # If cached file exists but is not a valid image, delete and re-download
-        if os.path.exists(local):
-            pix_check = QPixmap()
-            pix_check.loadFromData(open(local, "rb").read())
-            if pix_check.isNull():
+        def _work():
+            local = get_cache_path(full_url)
+            # A cached file that is not a valid image → delete and re-download
+            if os.path.exists(local):
                 try:
-                    os.remove(local)
+                    PILImage.open(local).verify()
                 except Exception:
-                    pass
-
-        if not os.path.exists(local):
-            local = sgdb_client.download_image(full_url, local)
-
-        if local and os.path.exists(local):
-            # Final validation — confirm PIL can open it before adding to canvas
+                    try: os.remove(local)
+                    except Exception: pass
+            if not os.path.exists(local):
+                local = sgdb_client.download_image(full_url, local)
+            if not local or not os.path.exists(local):
+                raise RuntimeError("download failed")
             try:
                 PILImage.open(local).verify()
             except Exception:
-                # File is corrupt (HTML page, partial download, etc.) — remove it
-                try:
-                    os.remove(local)
-                except Exception:
-                    pass
-                return
+                try: os.remove(local)
+                except Exception: pass
+                raise RuntimeError("file is not a valid image")
+            return local
 
-            name = self._selected_game["name"] if self._selected_game else ""
-            self.artwork_layer_ready.emit(local, name)
+        def _done(res):
+            if card is not None:
+                try:
+                    card.set_busy(False)
+                except RuntimeError:
+                    pass                    # card was deleted (page changed)
+            if isinstance(res, Exception):
+                if card is not None:
+                    try: card.set_error()
+                    except RuntimeError: pass
+                self._set_art_status(f"Could not load image: {res}", "red")
+                return
+            self.artwork_layer_ready.emit(res, name)
+
+        _AsyncBridge(self, _work, _done).start()
+
+    # ── Screenshot helper (tools/shot.py search-results) ──────────────────────
+    def debug_fill_results(self):
+        """Populate list + grid with 9 placeholder entries (no network)."""
+        names = ["Elden Ring", "Hades", "Hollow Knight", "Celeste", "Outer Wilds",
+                 "Disco Elysium", "Stardew Valley", "Portal 2", "Half-Life: Alyx"]
+        colours = [C["accent_dim"], C["surface_3"], C["green_dim"], C["gold_dim"], C["red_dim"],
+                   C["border_strong"], C["surface_2"], C["accent_dim"], C["surface_3"]]
+        self.search_input.setText("elden")
+        self.game_list.clear()
+        for i, n in enumerate(names):
+            it = QListWidgetItem(n)
+            it.setData(Qt.UserRole, 1000 + i)
+            self.game_list.addItem(it)
+        self.game_list.setCurrentRow(0)
+        self._show_game_list(True)
+        self._set_status(f"{len(names)} games")
+        self._selected_game = {"id": 1000, "name": names[0]}
+        self._total_pages = 3
+        self._current_page = 0
+        self._rebuild_page_buttons()
+        self._clear_thumbs()
+        for i, n in enumerate(names):
+            card = ArtworkCard(f"debug://{i}")
+            pm = QPixmap(300, 450)
+            pm.fill(QColor(colours[i % len(colours)]))
+            p = QPainter(pm)
+            p.setFont(theme_font("2xl", bold=True))
+            p.setPen(QColor(C["text_2"]))
+            p.drawText(pm.rect(), Qt.AlignCenter | Qt.TextWordWrap, n)
+            p.end()
+            card._pix = pm
+            self._cards.append(card)
+        self._relayout_cards()

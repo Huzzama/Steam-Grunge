@@ -87,11 +87,15 @@ def _fetch_raw(query: str, timeout: int) -> list:
             raise ValueError(f"Malformed response: {exc}") from exc
         raise ConnectionError(str(exc)) from exc
 
-    # ── Strategy 2: urllib with SSL verification disabled (last resort) ───
-    log.debug("[appIdGetter] Using urllib fallback (SSL verify disabled)")
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode    = ssl.CERT_NONE
+    # ── Strategy 2: urllib (requests not installed). Certificates are still
+    # verified — a wrong AppID would be written into the Steam library and
+    # persisted, so we never accept an unverified peer.
+    log.debug("[appIdGetter] Using urllib fallback")
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
 
     req = urllib.request.Request(url, headers=headers)
     try:
@@ -168,14 +172,43 @@ def _clean_candidates(items: list, limit: int) -> list:
     return out
 
 
-def _best_match(candidates: list, query: str) -> Optional[dict]:
+def _norm(name: str) -> str:
+    """Lower-case, strip ™/®/punctuation and collapse whitespace for matching."""
+    import re
+    n = name.lower().replace("™", "").replace("®", "")
+    n = re.sub(r"[^a-z0-9]+", " ", n)
+    return " ".join(n.split())
+
+
+def match_confidence(candidates: list, query: str) -> Tuple[Optional[dict], float]:
+    """
+    Pick the candidate that best matches *query* and say how sure we are.
+
+    Returns (candidate, score 0–1). A score ≥ CONFIDENT_SCORE means the name
+    is (nearly) identical and the UI may pre-select it; anything lower is a
+    guess ("Portal" → "Portal 2") and must NOT be auto-confirmed.
+    """
+    import difflib
     if not candidates:
-        return None
-    q = query.strip().lower()
+        return None, 0.0
+    q = _norm(query)
+    best, best_score = None, -1.0
     for c in candidates:
-        if c["name"].lower() == q:
-            return c
-    return candidates[0]
+        cn = _norm(c["name"])
+        if cn == q:
+            return c, 1.0
+        score = difflib.SequenceMatcher(None, q, cn).ratio()
+        if score > best_score:
+            best, best_score = c, score
+    return best, best_score
+
+
+CONFIDENT_SCORE = 0.92
+
+
+def _best_match(candidates: list, query: str) -> Optional[dict]:
+    best, score = match_confidence(candidates, query)
+    return best if score >= CONFIDENT_SCORE else None
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -238,6 +271,8 @@ def get_app_id_and_name(
 
 
 __all__ = [
+    "match_confidence",
+    "CONFIDENT_SCORE",
     "search_candidates",
     "search_candidates_safe",
     "get_app_id",

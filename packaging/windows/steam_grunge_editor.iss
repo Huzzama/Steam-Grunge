@@ -22,7 +22,7 @@
 
 #define AppName      "Steam Grunge Editor"
 #ifndef AppVersion
-  #define AppVersion "2.1.0"
+  #define AppVersion "4.0.0"
 #endif
 #define AppPublisher "Huzzama"
 #define AppURL       "https://github.com/Huzzama/Steam-Grunge"

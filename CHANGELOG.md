@@ -4,6 +4,69 @@ All notable changes to Steam Grunge Editor are documented here.
 
 ---
 
+## [4.0.0] — 2026-09-29
+
+First release of the rebuilt editor (3.1 and 3.2 were never published on their own).
+
+### Packaging
+- One release pipeline (`release.yml`): push a `v*` tag → tests → AppImage, .deb,
+  .rpm, Windows installer and macOS .dmg → one GitHub Release with checksums and
+  the CHANGELOG section as notes. "Run workflow" builds without publishing.
+- Every build starts the frozen app headless (`--self-test`: builds the whole UI
+  and checks the bundled assets) before packaging it.
+- Linux packages share one self-contained PyInstaller folder
+  (`packaging/linux/`): the AppImage no longer unpacks a one-file binary on every
+  launch, and the .deb/.rpm no longer run `pip install` at install time.
+- Bundled assets were missing from the old Linux builds (`assets/` instead of
+  `app/assets/`) and the splash/window icon from every frozen build.
+- Dropped unused dependencies (PySide6-Addons, opencv-python) and Google's
+  discovery documents for every API except Drive: bundles ~100 MB smaller.
+
+### UI polish
+
+- One theme (`app/ui/theme.py`): tokens, a single stylesheet with role/variant
+  selectors, SVG combo arrows and checkbox marks; 200 inline stylesheets and
+  every emoji/glyph icon removed (Lucide icons via `app/ui/icons.py`).
+- Widget kit (`app/ui/kit.py`): collapsible sections, slider rows, colour
+  swatches, icon buttons, toasts, empty states — every control 28 px tall.
+- Side panels open fully extended (400 / 500 px) and shrink only when the
+  canvas would drop under 480 px; the search panel no longer clips its filters
+  (now a collapsible 2×2 grid) and the artwork grid fits the panel width.
+- Editor panel restructured into Template · Assets (Bars/Ratings/Texture) ·
+  Canvas · Layers · Layer properties, with "Apply to Steam" pinned at the
+  bottom; icon toolbar for layers; fixed the layer list rows never painting
+  (`_checker` cache shadowed by a method).
+- Status bar, tab bar, tool bars and every dialog rebuilt on the kit;
+  transient messages also show as toasts.
+- `tools/shot.py`: headless screenshots of the window, panels and dialogs.
+
+### Editor fixes and features (3.1)
+
+#### Fixed
+- Steam grid filenames were inverted: the portrait cover is `{appid}p.png`, the wide capsule `{appid}.png`. One mapping now lives in `config.GRID_FILENAMES`.
+- Sync no longer writes into Steam's own `appcache/librarycache`; only `userdata/<id>/config/grid`.
+- SYNC TO STEAM button crashed on a missing module; Export/Sync/Export button now share one flow (AppID confirmed once, Steam filename, overwrite — no more `Game_template_timestamp.png` piles).
+- Export renders through the same painter as the preview: text outline/shadow, orientation, alignment, letter spacing, gradient fills, vector paths and a fixed-seed film grain all match what you see.
+- Undo: one step per slider drag, add+move no longer deletes the layer, arrow nudges and text edits are undoable; history no longer pickles every pixel.
+- SteamGridDB search/listing/download and the Steam sync run off the GUI thread.
+- AppID matching only auto-confirms near-identical names; wrong mappings can be removed in Preferences → Manage AppID mappings.
+- Export targets the most recently used Steam account (from `loginusers.vdf`) and asks when several exist.
+- `steamkustom_auth` import broke bundled builds; the token is stored in the user data folder.
+- Ctrl+Shift+Z did undo; text with the default font exported at ~10 px; fonts were re-registered every repaint; `is_steam_running()` matched this app.
+- Imported fonts/textures go to the user data folder (the assets folder is read-only when installed).
+
+#### Added
+- File and Edit menus with working shortcuts; per-tab project state; tab titles follow the game; closing a tab asks to save.
+- Cloud Sync: Back Up / Restore Steam artwork as one ZIP per account; Backup Status.
+- Preferences → Steam: AppID mapping manager, opt-in usage statistics (off by default).
+
+#### Removed
+- Per-image Drive sync (upload/download/conflicts/legacy names) and the automatic download-on-startup / upload-on-exit.
+- Brush engine remnants, legacy compositor + filters, duplicate canvas tool modules, bulk sync, session_stats, the non-functional Scanlines slider and document-level colour sliders (colour is per layer).
+- Fake preferences (hardware acceleration, HQ compose, export folder) that were never read.
+
+---
+
 ## [2.1.0] — 2026-03-19
 
 ### Added
@@ -340,4 +403,4 @@ Changes made:
 - Multi-tab workflow
 - Export single asset or all assets at once
 - Sync to Steam dialog with automatic AppID lookup via Steam Store API
-- Packages: AppImage, .deb, Windows installer (.exe), macOS .dmg
+- Packages: AppImage, .deb, Windows installer (.exe), macOS .dmg

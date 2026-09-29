@@ -1,0 +1,13 @@
+# Normalise line endings in the repo (LF); Windows checkouts may use CRLF,
+# except files that run on Linux/macOS build machines, which must stay LF.
+* text=auto
+*.sh      text eol=lf
+*.spec    text eol=lf
+*.yml     text eol=lf
+*.install text eol=lf
+PKGBUILD  text eol=lf
+*.png  binary
+*.jpg  binary
+*.otf  binary
+*.ttf  binary
+*.pdf  binary

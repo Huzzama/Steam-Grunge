@@ -36,12 +36,12 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 
 - 🔍 **SteamGridDB Integration** — search and download game artwork directly inside the editor
 - 🎨 **Layer-based canvas** — drag, resize, rotate, and blend multiple image layers
-- 📼 **VHS & grunge effects** — film grain, chromatic aberration, scanlines, color grading
+- 📼 **VHS & grunge effects** — film grain, chromatic aberration, per-layer color grading, VHS templates
 - 🖼️ **All Steam artwork types** — Cover, Wide Cover, VHS Cover, VHS Pile, VHS Cassette, Hero, Logo, Icon
 - ✅ **Smart AppID detection** — auto-looks up the Steam AppID and confirms once per session
-- 💾 **Correct filenames on export** — outputs `2050650.png`, `2050650p.png`, `2050650_hero.png`, etc.
-- ⇪ **Sync to Steam** — copies exported files directly into your Steam `userdata/grid` folder
-- 🖌️ **Custom brush engine** — import `.gbr`, `.png`, `.zip` brush packs with full pressure controls
+- 💾 **Correct filenames on export** — outputs `2050650p.png`, `2050650.png`, `2050650_hero.png`, etc.
+- ⇪ **Apply to Steam** — Export writes straight into your Steam `userdata/<id>/config/grid` folder
+- ☁️ **Drive backup** — one ZIP of your whole Steam grid folder per account, restore in one click (PimpMySteam token)
 - 🔤 **Font importer** — add `.ttf` / `.otf` fonts available in the text layer tool
 - 🗂️ **Tab system** — work on multiple games at once, each tab has its own independent state
 - 💼 **Project save/load** — save your full canvas and layer stack as a `.sgeproj` file; auto-saves every 5 minutes
@@ -69,11 +69,11 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 
 ### 🪟 Windows
 
-Download the latest `Steam_Grunge_Editor_Setup.exe` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases), run it and follow the installer.
+Download the latest `SteamGrungeEditor-x.y.z-Setup.exe` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases), run it and follow the installer.
 
 ### 🍎 macOS (Big Sur 11.0+)
 
-Download the latest `Steam_Grunge_Editor-x.x.x.dmg` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
+Download the latest `Steam_Grunge_Editor-x.y.z-arm64.dmg` (Apple Silicon) from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
 
 1. Open the `.dmg` file
 2. Drag **Steam Grunge Editor** into your **Applications** folder
@@ -84,8 +84,8 @@ Download the latest `Steam_Grunge_Editor-x.x.x.dmg` from [Releases](https://gith
 Download the latest `.AppImage` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
 
 ```bash
-chmod +x Steam_Grunge_Editor-x86_64.AppImage
-./Steam_Grunge_Editor-x86_64.AppImage
+chmod +x Steam_Grunge_Editor-*-x86_64.AppImage
+./Steam_Grunge_Editor-*-x86_64.AppImage
 ```
 
 ### 🐧 .deb (Ubuntu / Linux Mint / Debian / Pop!_OS)
@@ -93,8 +93,14 @@ chmod +x Steam_Grunge_Editor-x86_64.AppImage
 Download the latest `.deb` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
 
 ```bash
-sudo dpkg -i steam-grunge-editor_2.0.0_all.deb
-sudo apt-get install -f
+sudo apt install ./steam-grunge-editor_*_amd64.deb
+```
+
+### 🐧 .rpm (Fedora / Bazzite)
+
+```bash
+sudo dnf install ./steam-grunge-editor-*.x86_64.rpm      # Fedora
+rpm-ostree install ./steam-grunge-editor-*.x86_64.rpm    # Bazzite / Fedora Atomic
 ```
 
 ### 🐧 Arch Linux / AUR (Arch, Manjaro, EndeavourOS)
@@ -147,7 +153,7 @@ Your key is stored locally between sessions and never shared.
 5. File → Export  (Ctrl+E)
       ├── Confirms Steam AppID once per session
       └── Saves file with correct Steam filename
-6. Sync to Steam → Sync to Steam  (Ctrl+Shift+S)
+6. Sync to Steam → Sync to Steam  (Ctrl+Shift+A)
       ├── Copies files into your Steam userdata/grid folder
       └── Restart Steam to see your new artwork
 ```
@@ -156,8 +162,8 @@ Exported files follow Steam's naming convention automatically:
 
 | Template | Filename |
 |---|---|
-| Cover | `{appid}.png` |
-| Wide / VHS variants | `{appid}p.png` |
+| Cover / VHS Cover | `{appid}p.png` |
+| Wide / VHS Pile / VHS Cassette | `{appid}.png` |
 | Hero | `{appid}_hero.png` |
 | Logo | `{appid}_logo.png` |
 | Icon | `{appid}_icon.png` |
@@ -184,29 +190,26 @@ canvas settings. This lets you close and reopen a work-in-progress without losin
 Steam-Grunge/
 ├── .github/
 │   └── workflows/
-│       ├── release.yml           <- Linux packages (AppImage + .deb)
-│       ├── build-windows.yml     <- Windows installer
-│       └── build-macos.yml       <- macOS .dmg
+│       └── release.yml           <- tag v* → tests + every package + GitHub Release
 ├── app/
 │   ├── assets/
-│   │   ├── brushes/              <- brush library (.gbr, .png, .zip)
 │   │   ├── fonts/                <- custom fonts (.ttf, .otf)
 │   │   ├── platformBars/         <- console bar overlays
 │   │   ├── ratings/              <- rating badge overlays
 │   │   ├── templates/            <- template PNG overlays
 │   │   ├── textures/             <- deterioration textures
 │   │   └── icon.png              <- app icon
-│   ├── editor/                   <- compositor, exports, templates
-│   ├── filters/                  <- color, film grain, VHS, distress
-│   ├── services/                 <- SteamGridDB API, Steam sync, export flow, projectIO
+│   ├── services/                 <- SteamGridDB API, Steam sync, export flow, Drive backup, projectIO
 │   ├── ui/
-│   │   ├── canvas/               <- canvas engine (layers, fx, tools, handles)
+│   │   ├── canvas/               <- canvas engine (layers, previewCanvas)
 │   │   └── ...                   <- panels, dialogs, widgets
 │   ├── config.py
 │   ├── main.py                   <- entry point
 │   └── state.py
 ├── packaging/
+│   ├── linux/                    <- shared PyInstaller bundle (spec + build-bundle.sh)
 │   ├── appimage/                 <- Linux AppImage build
+│   ├── fedora/                   <- .rpm build
 │   ├── arch/                     <- Arch Linux / AUR
 │   ├── debian/                   <- .deb build
 │   ├── desktop/                  <- .desktop launcher file
@@ -238,10 +241,12 @@ Steam-Grunge/
 | `Ctrl+D` | Duplicate layer |
 | `Delete` | Delete layer |
 | `Ctrl+Shift+C` | Crop layer |
-| `B` | Toggle brush panel |
-| `E` | Eraser tool |
+| `Ctrl+Shift+A` | Sync to Steam |
+| `Ctrl+Shift+U` / `Ctrl+Shift+D` | Back up / restore Steam artwork to Drive |
+| `Ctrl+,` | Preferences |
 | `Ctrl+T` | New tab |
 | `Ctrl+W` | Close tab |
+| `Ctrl+Tab` | Next tab |
 
 ---
 
@@ -260,3 +265,14 @@ Pull requests are welcome. For major changes please open an issue first to discu
 <div align="center">
 Made with ♥ for the Steam community
 </div>
+
+---
+
+## Releasing
+
+Every package is built by GitHub Actions (`.github/workflows/release.yml`):
+
+1. Set `VERSION` and move the `## Unreleased` notes in `CHANGELOG.md` under `## [x.y.z] — date` (they become the release notes). Commit and push to `main` **before** tagging — the tag builds whatever commit it points to.
+2. `git tag vx.y.z && git push origin vx.y.z`
+
+The workflow runs the tests, builds the AppImage + .deb (Ubuntu 22.04), the .rpm (Fedora 41), the Windows installer and the macOS .dmg — each build starts the app headless with `--self-test` before it is packaged — and publishes one release with all files and `SHA256SUMS.txt`. "Run workflow" on the Actions tab builds everything without publishing. Locally: `bash packaging/appimage/build-appimage.sh` (or `packaging/debian/build-deb.sh`, `packaging/fedora/build-rpm.sh`).

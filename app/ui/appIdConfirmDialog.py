@@ -7,9 +7,12 @@ from PySide6.QtWidgets import (
     QSizePolicy, QProgressBar, QWidget,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject
-from PySide6.QtGui  import QFont, QColor
+from PySide6.QtGui  import QColor
 
 from app.services.appIdGetter import search_candidates, NetworkError
+from app.ui        import icons
+from app.ui.kit    import Button, Divider, label, hbox, vbox, grid, set_tone
+from app.ui.theme  import C, SP
 
 
 # ── async worker ──────────────────────────────────────────────────────────────
@@ -62,69 +65,31 @@ _ERROR_LABELS = {
 }
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-def _hline():
-    f = QFrame(); f.setFrameShape(QFrame.HLine)
-    f.setStyleSheet("color:#2a2a2a; background:#2a2a2a; max-height:1px;")
-    return f
+# ── status line (icon + tone-coloured text) ───────────────────────────────────
+_TONE_ICON = {"green": ("circle-check", C["green"]), "red": ("circle-x", C["red"]),
+              "gold": ("triangle-alert", C["gold"]), "accent": ("loader-circle", C["accent"]),
+              None: ("info", C["text_dim"])}
 
 
-STYLE = """
-QDialog {
-    background: #111118;
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
-    color: #ccc;
-}
-QLabel               { color: #aaa; font-size: 13px; }
-QLabel#heading       { color: #ddd; font-size: 14px; font-weight: bold; }
-QLabel#sub           { color: #666; font-size: 11px; letter-spacing: 1px; }
-QLabel#game_name_lbl { color: #eee; font-size: 18px; font-weight: bold;
-                       font-family: 'Courier New'; letter-spacing: 1px; }
-QLabel#appid_lbl     { color: #88cc88; font-size: 22px; font-weight: bold;
-                       font-family: 'Courier New'; }
-QLabel#appid_sub     { color: #3a6e3a; font-size: 11px; }
-QLabel#warn          { color: #cc8844; font-size: 12px; }
-QLabel#ok            { color: #88cc88; font-size: 12px; }
-QLineEdit {
-    background: #1a1a22; border: 1px solid #333; color: #ddd;
-    font-family: 'Courier New'; font-size: 13px;
-    padding: 5px 8px; border-radius: 2px;
-}
-QLineEdit:focus { border-color: #5566aa; }
-QListWidget {
-    background: #0e0e14; border: 1px solid #2a2a3a; color: #ccc;
-    font-family: 'Courier New'; font-size: 12px;
-    outline: none;
-}
-QListWidget::item { padding: 6px 8px; border-bottom: 1px solid #1a1a22; }
-QListWidget::item:selected { background: #1e2a3a; color: #88aaff; }
-QListWidget::item:hover    { background: #161628; }
-QPushButton {
-    background: #1a1a28; border: 1px solid #333;
-    color: #aaa; font-family: 'Courier New'; font-size: 13px;
-    padding: 7px 18px; border-radius: 2px; min-height: 30px;
-}
-QPushButton:hover   { background: #222238; color: #ddd; border-color: #5566aa; }
-QPushButton:pressed { background: #111120; }
-QPushButton#confirm_btn {
-    background: #1a2e1a; border: 1px solid #3a6e3a;
-    color: #88cc88; font-weight: bold; font-size: 14px;
-    min-width: 140px;
-}
-QPushButton#confirm_btn:hover   { background: #223a22; border-color: #55aa55; color: #aaffaa; }
-QPushButton#confirm_btn:disabled { background: #111; color: #333; border-color: #222; }
-QPushButton#manual_btn {
-    background: transparent; border: 1px solid #2a2a3a;
-    color: #555; font-size: 12px;
-}
-QPushButton#manual_btn:hover { color: #aaa; border-color: #444; }
-QProgressBar {
-    background: #1a1a22; border: 1px solid #2a2a2a;
-    border-radius: 2px; height: 4px;
-}
-QProgressBar::chunk { background: #3a5a3a; border-radius: 2px; }
-"""
+class _StatusLine(QWidget):
+    def __init__(self, text: str = "", tone=None, parent=None):
+        super().__init__(parent)
+        lay = hbox(self, spacing=SP["sm"])
+        self._ic = QLabel()
+        self._ic.setFixedSize(16, 16)
+        lay.addWidget(self._ic, 0, Qt.AlignmentFlag.AlignTop)
+        self._lbl = label("", "dim", wrap=True)
+        lay.addWidget(self._lbl, 1)
+        self.set(text, tone)
+
+    def set(self, text: str, tone=None):
+        name, color = _TONE_ICON[tone]
+        self._ic.setPixmap(icons.pixmap(name, color, 16))
+        self._lbl.setText(text)
+        set_tone(self._lbl, tone)
+
+    def setText(self, text: str):
+        self._lbl.setText(text)
 
 
 class AppIdConfirmDialog(QDialog):
@@ -139,9 +104,8 @@ class AppIdConfirmDialog(QDialog):
     def __init__(self, game_name: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Confirm Steam Game")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(500)
         self.setModal(True)
-        self.setStyleSheet(STYLE)
 
         self._game_name = game_name.strip()
         self._candidates: List[dict] = []
@@ -163,117 +127,86 @@ class AppIdConfirmDialog(QDialog):
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build(self):
-        root = QVBoxLayout(self)
-        root.setSpacing(12)
-        root.setContentsMargins(24, 20, 24, 20)
+        root = vbox(self, (SP["xl"], SP["lg"], SP["xl"], SP["lg"]), SP["md"])
 
         # ── Header ────────────────────────────────────────────────────────────
-        hdr = QLabel("STEAM GAME DETECTED")
-        hdr.setObjectName("sub")
-        root.addWidget(hdr)
+        head = hbox(spacing=SP["sm"])
+        ic = QLabel()
+        ic.setPixmap(icons.pixmap("gamepad-2", C["accent"], 18))
+        head.addWidget(ic)
+        head.addWidget(label("CONFIRM STEAM GAME", "title"), 1)
+        root.addLayout(head)
+        root.addWidget(label("The exported file is named after the Steam AppID, so Steam shows it on the "
+                             "right game. Confirm the match below or pick another one.", "dim", wrap=True))
 
-        # Game name (big)
-        self._name_lbl = QLabel(self._game_name)
-        self._name_lbl.setObjectName("game_name_lbl")
-        self._name_lbl.setWordWrap(True)
-        root.addWidget(self._name_lbl)
-
-        # AppID display
-        appid_row = QHBoxLayout()
-        appid_col = QVBoxLayout()
-        id_lbl = QLabel("STEAM APP ID")
-        id_lbl.setObjectName("sub")
-        self._appid_lbl = QLabel("—")
-        self._appid_lbl.setObjectName("appid_lbl")
-        appid_col.addWidget(id_lbl)
-        appid_col.addWidget(self._appid_lbl)
-        appid_row.addLayout(appid_col)
-        appid_row.addStretch()
-
-        # store link (small)
-        self._link_lbl = QLabel("")
-        self._link_lbl.setObjectName("appid_sub")
+        # ── Match card ────────────────────────────────────────────────────────
+        card = QFrame()
+        card.setProperty("surface", "inset")
+        cg = grid(card, (SP["md"], SP["md"], SP["md"], SP["md"]), SP["md"], SP["xs"])
+        cg.addWidget(label("GAME", "eyebrow"), 0, 0)
+        self._name_lbl = label(self._game_name, "body", wrap=True)
+        cg.addWidget(self._name_lbl, 1, 0)
+        cg.addWidget(label("STEAM APP ID", "eyebrow"), 0, 1)
+        self._appid_lbl = label("—", "value")
+        cg.addWidget(self._appid_lbl, 1, 1)
+        self._link_lbl = label("", "muted")
         self._link_lbl.setOpenExternalLinks(True)
-        self._link_lbl.setTextFormat(Qt.RichText)
-        appid_row.addWidget(self._link_lbl, 0, Qt.AlignBottom)
-        root.addLayout(appid_row)
+        self._link_lbl.setTextFormat(Qt.TextFormat.RichText)
+        cg.addWidget(self._link_lbl, 2, 0, 1, 2)
+        cg.setColumnStretch(0, 1)
+        cg.setColumnMinimumWidth(1, 120)
+        root.addWidget(card)
 
         # Status / loading
-        self._status_lbl = QLabel("Searching Steam Store…")
-        self._status_lbl.setObjectName("warn")
+        self._status_lbl = _StatusLine("Searching Steam Store…", "accent")
         root.addWidget(self._status_lbl)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
-        self._progress.setFixedHeight(4)
+        self._progress.setFixedHeight(6)
+        self._progress.setTextVisible(False)
         root.addWidget(self._progress)
-
-        root.addWidget(_hline())
-
-        # ── Action buttons ────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-
-        self._manual_btn = QPushButton("Search Manually")
-        self._manual_btn.setObjectName("manual_btn")
-        self._manual_btn.clicked.connect(self._toggle_manual)
-        btn_row.addWidget(self._manual_btn)
-
-        btn_row.addStretch()
-
-        self._confirm_btn = QPushButton("✔  Confirm")
-        self._confirm_btn.setObjectName("confirm_btn")
-        self._confirm_btn.setEnabled(False)
-        self._confirm_btn.clicked.connect(self._confirm)
-        btn_row.addWidget(self._confirm_btn)
-
-        root.addLayout(btn_row)
 
         # ── Manual search panel (hidden by default) ───────────────────────────
         self._manual_panel = QWidget()
         self._manual_panel.setVisible(False)
-        mp = QVBoxLayout(self._manual_panel)
-        mp.setContentsMargins(0, 0, 0, 0)
-        mp.setSpacing(6)
+        mp = vbox(self._manual_panel, spacing=SP["sm"])
 
-        mp.addWidget(_hline())
+        mp.addWidget(Divider())
+        mg = grid(h=SP["md"], v=SP["sm"])
 
-        search_row = QHBoxLayout()
+        search_row = hbox(spacing=SP["sm"])
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("Enter game title…")
         self._search_edit.returnPressed.connect(self._manual_search)
         search_row.addWidget(self._search_edit, 1)
-        search_btn = QPushButton("Search")
-        search_btn.setFixedWidth(80)
-        search_btn.clicked.connect(self._manual_search)
-        search_row.addWidget(search_btn)
-        mp.addLayout(search_row)
+        search_row.addWidget(Button("Search", icon="search", on_click=self._manual_search))
+        l = label("Search by title", "dim"); l.setMinimumWidth(110)
+        mg.addWidget(l, 0, 0)
+        mg.addLayout(search_row, 0, 1)
 
         # ── Direct numeric AppID entry ─────────────────────────────────────
-        numeric_lbl = QLabel("— or enter AppID directly —")
-        numeric_lbl.setAlignment(Qt.AlignCenter)
-        numeric_lbl.setStyleSheet("color:#444; font-size:11px; padding-top:4px;")
-        mp.addWidget(numeric_lbl)
-
-        numeric_row = QHBoxLayout()
-        numeric_row.addStretch()
+        numeric_row = hbox(spacing=SP["sm"])
         self._numeric_edit = QLineEdit()
         self._numeric_edit.setPlaceholderText("e.g.  1971870")
-        self._numeric_edit.setFixedWidth(160)
-        self._numeric_edit.setAlignment(Qt.AlignCenter)
+        self._numeric_edit.setMaximumWidth(160)
         self._numeric_edit.textChanged.connect(self._on_numeric_changed)
         self._numeric_edit.returnPressed.connect(self._apply_numeric)
         numeric_row.addWidget(self._numeric_edit)
-        self._use_numeric_btn = QPushButton("Use This ID")
-        self._use_numeric_btn.setFixedWidth(100)
+        self._use_numeric_btn = Button("Use this ID", icon="check", on_click=self._apply_numeric)
         self._use_numeric_btn.setEnabled(False)
-        self._use_numeric_btn.clicked.connect(self._apply_numeric)
         numeric_row.addWidget(self._use_numeric_btn)
         numeric_row.addStretch()
-        mp.addLayout(numeric_row)
+        l = label("or enter AppID", "dim"); l.setMinimumWidth(110)
+        mg.addWidget(l, 1, 0)
+        mg.addLayout(numeric_row, 1, 1)
+        mg.setColumnStretch(1, 1)
+        mp.addLayout(mg)
 
         self._search_progress = QProgressBar()
         self._search_progress.setRange(0, 0)
-        self._search_progress.setFixedHeight(4)
+        self._search_progress.setFixedHeight(6)
+        self._search_progress.setTextVisible(False)
         self._search_progress.setVisible(False)
         mp.addWidget(self._search_progress)
 
@@ -284,12 +217,27 @@ class AppIdConfirmDialog(QDialog):
 
         root.addWidget(self._manual_panel)
 
+        root.addWidget(Divider())
+
+        # ── Action buttons ────────────────────────────────────────────────────
+        btn_row = hbox(spacing=SP["sm"])
+        self._manual_btn = Button("Search manually", "ghost", icon="search", on_click=self._toggle_manual)
+        btn_row.addWidget(self._manual_btn)
+        btn_row.addStretch()
+        cancel_btn = Button("Cancel", on_click=self.reject)
+        cancel_btn.setMinimumWidth(90)
+        btn_row.addWidget(cancel_btn)
+        self._confirm_btn = Button("Confirm", "primary", icon="check", on_click=self._confirm)
+        self._confirm_btn.setMinimumWidth(140)
+        self._confirm_btn.setEnabled(False)
+        btn_row.addWidget(self._confirm_btn)
+        root.addLayout(btn_row)
+
     # ── auto search ───────────────────────────────────────────────────────────
     def _start_search(self, query: str):
         if not query:
             self._progress.setVisible(False)
-            self._status_lbl.setText("No game name — enter AppID manually.")
-            self._status_lbl.setStyleSheet("color:#cc8844;")
+            self._status_lbl.set("No game name — enter AppID manually.", "gold")
             if not self._manual_open:
                 self._toggle_manual()
             return
@@ -330,25 +278,27 @@ class AppIdConfirmDialog(QDialog):
 
             friendly = _ERROR_LABELS.get(error_code, "Search unavailable.")
             detail   = error_msg[:120] + ("…" if len(error_msg) > 120 else "")
-            self._status_lbl.setText(f"{friendly}\n{detail}")
-            self._status_lbl.setStyleSheet("color:#cc8844;")
+            self._status_lbl.set(f"{friendly}\n{detail}", "gold")
             if not self._manual_open:
                 self._toggle_manual()
             return
 
         if error_code == "no_results" or not candidates:
-            self._status_lbl.setText(
-                "No Steam matches found — enter AppID manually or try searching."
-            )
-            self._status_lbl.setStyleSheet("color:#cc8844;")
+            self._status_lbl.set("No Steam matches found — enter AppID manually or try searching.", "gold")
             return
 
-        name_lower = self._game_name.lower()
-        best = next(
-            (c for c in candidates if c["name"].lower() == name_lower),
-            candidates[0]
-        )
-        self._apply_candidate(best)
+        from app.services.appIdGetter import match_confidence, CONFIDENT_SCORE
+        best, score = match_confidence(candidates, self._game_name)
+        if best is not None and score >= CONFIDENT_SCORE:
+            self._apply_candidate(best)
+        else:
+            # Not sure which game this is — show the list, make the user pick.
+            self._best = None
+            self._confirm_btn.setEnabled(False)
+            self._status_lbl.set(f"Closest match: {best['name']} — not identical. "
+                                 "Pick the right game below or enter the AppID.", "gold")
+            if not self._manual_open:
+                self._toggle_manual()
 
     def _apply_candidate(self, c: dict):
         self._best = c
@@ -356,10 +306,9 @@ class AppIdConfirmDialog(QDialog):
         self._name_lbl.setText(c["name"])
         self._link_lbl.setText(
             f'<a href="https://store.steampowered.com/app/{c["id"]}" '
-            f'style="color:#3a5a8a;">store.steampowered.com/app/{c["id"]}</a>'
+            f'style="color:{C["accent"]};">store.steampowered.com/app/{c["id"]}</a>'
         )
-        self._status_lbl.setText("✔  Match found — confirm or search manually.")
-        self._status_lbl.setStyleSheet("color:#88cc88;")
+        self._status_lbl.set("Match found — confirm or search manually.", "green")
         self._confirm_btn.setEnabled(True)
 
     # ── manual search ─────────────────────────────────────────────────────────
@@ -367,7 +316,7 @@ class AppIdConfirmDialog(QDialog):
         self._manual_open = not self._manual_open
         self._manual_panel.setVisible(self._manual_open)
         self._manual_btn.setText(
-            "Hide Manual Search" if self._manual_open else "Search Manually"
+            "Hide manual search" if self._manual_open else "Search manually"
         )
         if self._manual_open and not self._search_edit.text():
             self._search_edit.setText(self._game_name)
@@ -420,9 +369,11 @@ class AppIdConfirmDialog(QDialog):
         if error_code and error_code != "no_results":
             friendly = _ERROR_LABELS.get(error_code, "Search unavailable.")
             detail   = error_msg[:120] + ("…" if len(error_msg) > 120 else "")
-            for text, color in [(f"⚠  {friendly}", "#cc8844"), (detail, "#666")]:
+            for text, color in [(friendly, C["gold"]), (detail, C["text_dim"])]:
                 if text:
                     item = QListWidgetItem(text)
+                    if color == C["gold"]:
+                        item.setIcon(icons.icon("triangle-alert", C["gold"], 14))
                     item.setForeground(QColor(color))
                     item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
                     self._results_list.addItem(item)
@@ -430,13 +381,14 @@ class AppIdConfirmDialog(QDialog):
 
         if error_code == "no_results" or not candidates:
             item = QListWidgetItem("No Steam matches found — try a different name.")
-            item.setForeground(QColor("#888"))
+            item.setForeground(QColor(C["text_dim"]))
             item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
             self._results_list.addItem(item)
             return
 
         for c in candidates:
             item = QListWidgetItem(f"{c['name']}   —   AppID: {c['id']}")
+            item.setIcon(icons.icon("gamepad-2", C["text_dim"], 14))
             item.setData(Qt.UserRole, c)
             self._results_list.addItem(item)
 
@@ -459,13 +411,12 @@ class AppIdConfirmDialog(QDialog):
             "name": self._game_name or f"AppID {app_id}",
         }
         self._apply_candidate(synthetic)
-        self._status_lbl.setText(f"✔  Using AppID {app_id} (entered manually).")
-        self._status_lbl.setStyleSheet("color:#88cc88;")
+        self._status_lbl.set(f"Using AppID {app_id} (entered manually).", "green")
         # Collapse manual panel — user is done
         if self._manual_open:
             self._manual_open = False
             self._manual_panel.setVisible(False)
-            self._manual_btn.setText("Search Manually")
+            self._manual_btn.setText("Search manually")
             self.adjustSize()
 
     def _on_result_picked(self, item: QListWidgetItem):
@@ -475,7 +426,7 @@ class AppIdConfirmDialog(QDialog):
             # Collapse manual panel after picking
             self._manual_open = False
             self._manual_panel.setVisible(False)
-            self._manual_btn.setText("Search Manually")
+            self._manual_btn.setText("Search manually")
             self.adjustSize()
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
@@ -499,12 +450,15 @@ class AppIdConfirmDialog(QDialog):
             self.result_app_id = self._best["id"]
             self.result_name   = self._best["name"]
             # Persist confirmed mapping so future exports skip this dialog
-            try:
-                from app.services.appIdRegistry import AppIdRegistry
-                AppIdRegistry.shared().register(
-                    self._game_name, self.result_app_id,
-                    canonical=self.result_name,
-                )
-            except Exception:
-                pass   # registry is best-effort; never block export
-            self.accept()
+            # Only remember real game names — a manual AppID with no name
+            # would create a junk "" / "AppID 123" entry.
+            if self._game_name.strip():
+                try:
+                    from app.services.appIdRegistry import AppIdRegistry
+                    AppIdRegistry.shared().register(
+                        self._game_name, self.result_app_id,
+                        canonical=self.result_name,
+                    )
+                except Exception:
+                    pass   # registry is best-effort; never block export
+            self.accept()
