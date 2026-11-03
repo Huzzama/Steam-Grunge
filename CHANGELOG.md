@@ -6,6 +6,9 @@ All notable changes to Steam Grunge Editor are documented here.
 
 ## [4.1.0] — 2026-11-03
 
+Linux, any distro: `curl -fsSL https://raw.githubusercontent.com/Huzzama/Steam-Grunge/main/install.sh | sh`
+(latest AppImage into `~/.local/bin`, app-menu entry; run again to update).
+
 ### Backup
 - **Artwork on a USB stick**: Backup → *Export Artwork to File (USB)…* writes one
   ZIP (`grid/` = your custom artwork, optionally `librarycache/` = Steam's own

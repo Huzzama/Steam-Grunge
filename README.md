@@ -80,7 +80,17 @@ Download the latest `Steam_Grunge_Editor-x.y.z-arm64.dmg` (Apple Silicon) from [
 2. Drag **Steam Grunge Editor** into your **Applications** folder
 3. On first launch: right-click the app → **Open** (bypasses Gatekeeper unsigned warning)
 
-### 🐧 AppImage (any Linux distro)
+### 🐧 Any Linux distro — one command
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Huzzama/Steam-Grunge/main/install.sh | sh
+```
+
+Installs the latest AppImage for your user (no root): `~/.local/bin/steam-grunge-editor`
+plus an app-menu entry. Run the same command again to update;
+add `-s -- --uninstall` after `sh` to remove it (your projects and settings stay).
+
+### 🐧 AppImage by hand
 
 Download the latest `.AppImage` from [Releases](https://github.com/Huzzama/Steam-Grunge/releases):
 
