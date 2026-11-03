@@ -136,7 +136,7 @@ def main():
     window.show()
     splash.finish(window)
 
-    # Drive backup/restore is an explicit user action (Cloud Sync menu) —
+    # Drive backup/restore is an explicit user action (Backup menu) —
     # nothing is downloaded on startup or uploaded on exit.
     sys.exit(app.exec())
 

@@ -42,6 +42,7 @@ Search SteamGridDB, apply film grain and VHS effects, export with correct Steam 
 - 💾 **Correct filenames on export** — outputs `2050650p.png`, `2050650.png`, `2050650_hero.png`, etc.
 - ⇪ **Apply to Steam** — Export writes straight into your Steam `userdata/<id>/config/grid` folder
 - ☁️ **Drive backup** — one ZIP of your whole Steam grid folder per account, restore in one click (PimpMySteam token)
+- 💾 **Artwork on a USB stick** — export your grid artwork (and Steam's library cache) to one ZIP, import it on any PC; Drive backups import the same way
 - 🔤 **Font importer** — add `.ttf` / `.otf` fonts available in the text layer tool
 - 🗂️ **Tab system** — work on multiple games at once, each tab has its own independent state
 - 💼 **Project save/load** — save your full canvas and layer stack as a `.sgeproj` file; auto-saves every 5 minutes
@@ -167,6 +168,27 @@ Exported files follow Steam's naming convention automatically:
 | Hero | `{appid}_hero.png` |
 | Logo | `{appid}_logo.png` |
 | Icon | `{appid}_icon.png` |
+
+### Backing up artwork (Drive or a USB stick)
+
+The **Backup** menu keeps your artwork safe two ways:
+
+* **Google Drive through PimpMySteam** — paste an app token from
+  pimpmysteam.com → Settings → Apps (Backup → Connect via PimpMySteam…), then
+  *Back Up Steam Artwork to Drive* uploads one ZIP of `userdata/<id>/config/grid`
+  per Steam account and *Restore…* brings it back. Signing in to PimpMySteam
+  with Google is not enough on its own: Drive is a separate permission, granted
+  with **Connect Google Drive** on pimpmysteam.com → Settings → Connections.
+  *Drive Backup Status…* tells you exactly what is missing when something fails.
+* **A file on a USB stick** — *Export Artwork to File (USB)…* writes
+  `steam-artwork-<id>.zip` with a `grid/` folder (your custom artwork) and,
+  optionally, `librarycache/` (Steam's own cache of every cover it has shown
+  you; Steam regenerates it, but importing it means the art is there before
+  Steam re-downloads anything). *Import Artwork from File…* accepts that ZIP or
+  a Drive backup ZIP; *Import Artwork from Folder…* accepts a copied `grid`
+  folder, a `librarycache` folder, or a folder holding both. Files with the
+  same name are overwritten and the dialog offers to restart Steam so it reads
+  the new artwork.
 
 ---
 

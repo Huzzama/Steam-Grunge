@@ -75,6 +75,11 @@ class _Dialog(QDialog):
         self.buttons.addStretch()
         self.root.addLayout(self.buttons)
 
+    def grow_with_content(self):
+        """Let a wrapped status label that changes while the dialog is open push the window taller."""
+        from PySide6.QtWidgets import QLayout
+        self.root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+
     def add_button(self, text: str, variant: str = "default", on_click=None, icon=None) -> Button:
         b = Button(text, variant, icon=icon, on_click=on_click)
         if variant == "primary":
@@ -83,6 +88,16 @@ class _Dialog(QDialog):
             b.setMinimumWidth(90)
         self.buttons.addWidget(b)
         return b
+
+
+def _fit_wrapped(lbl: QLabel):
+    """A word-wrapped label whose text just changed: reserve the height the new text
+    needs (Qt does not grow a shown dialog for height-for-width widgets by itself)."""
+    w = lbl.width() if lbl.width() > 40 else 400
+    lbl.setMinimumHeight(lbl.heightForWidth(w))
+    top = lbl.window()
+    if top is not None:
+        top.adjustSize()
 
 
 def _form_row(g: QGridLayout, row: int, text: str, widget, trailing=None):
@@ -127,7 +142,7 @@ class MainWindow(QMainWindow):
         self._compose_timer.timeout.connect(self._do_compose)
 
         # Update checker — fires 3 s after startup so it never delays launch
-        QTimer.singleShot(3000, self._check_for_updates)
+        QTimer.singleShot(3000, lambda: self._check_for_updates(manual=False))
 
         # Check PimpMySteam token on startup — non-blocking
         QTimer.singleShot(1500, self._check_token_on_startup)
@@ -327,8 +342,8 @@ class MainWindow(QMainWindow):
         sync_menu.addSeparator()
         _act(sync_menu, "Open Exports Folder…",       self._open_exports_folder, icon="folder")
 
-        # ── CLOUD SYNC ────────────────────────────────────────────────────
-        cloud_menu = menubar.addMenu("Cloud Sync")
+        # ── BACKUP (Drive through PimpMySteam, or a file on a USB stick) ──
+        cloud_menu = menubar.addMenu("Backup")
         _act(cloud_menu, "Connect via PimpMySteam…",  self._open_drive_connect, icon="key-round")
         cloud_menu.addSeparator()
         _act(cloud_menu, "Back Up Steam Artwork to Drive",
@@ -337,8 +352,14 @@ class MainWindow(QMainWindow):
         _act(cloud_menu, "Restore Steam Artwork from Drive…",
              lambda: self._drive_backup_restore("restore"), "Ctrl+Shift+D",
              tip="Download the backup ZIP and extract it into your Steam grid folder", icon="cloud-download")
+        _act(cloud_menu, "Drive Backup Status…",      self._open_drive_status, icon="cloud")
         cloud_menu.addSeparator()
-        _act(cloud_menu, "Backup Status…",            self._open_drive_status, icon="cloud")
+        _act(cloud_menu, "Export Artwork to File (USB)…", self._export_artwork_pack,
+             tip="One zip with your grid artwork and Steam's librarycache — keep it on a USB stick", icon="hard-drive-download")
+        _act(cloud_menu, "Import Artwork from File…", lambda: self._import_artwork_pack("file"),
+             tip="A zip made by Export (or a Drive backup zip) → back into Steam", icon="hard-drive-upload")
+        _act(cloud_menu, "Import Artwork from Folder…", lambda: self._import_artwork_pack("folder"),
+             tip="A copied grid folder, librarycache folder, or a folder holding both", icon="folder-open")
 
         # ── HELP ──────────────────────────────────────────────────────────
         help_menu = menubar.addMenu("Help")
@@ -713,10 +734,10 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dlg.exec()
-    # ── Cloud Sync handlers ───────────────────────────────────────────────────
+    # ── Backup handlers (Drive) ───────────────────────────────────────────────
 
     def _open_drive_connect(self):
-        """Cloud Sync → Connect via PimpMySteam — shows inline token dialog."""
+        """Backup → Connect via PimpMySteam — shows inline token dialog."""
         from app.services.steamkustom_auth import get_token, save_token, verify_async
 
         dlg = _Dialog(self, "PimpMySteam account",
@@ -831,7 +852,7 @@ class MainWindow(QMainWindow):
 
     def _drive_backup_restore(self, mode: str):
         """
-        Cloud Sync → Back Up / Restore Steam artwork.
+        Backup → Back Up / Restore Steam artwork.
 
         backup : zip userdata/<id>/config/grid → Drive
         restore: Drive zip → userdata/<id>/config/grid (overwrites same names)
@@ -843,7 +864,7 @@ class MainWindow(QMainWindow):
         if not is_configured():
             QMessageBox.warning(self, "Not Connected",
                 "Connect your PimpMySteam account first:\n"
-                "Cloud Sync → Connect via PimpMySteam…")
+                "Backup → Connect via PimpMySteam…")
             return
 
         title    = "Back Up Steam Artwork" if mode == "backup" else "Restore Steam Artwork"
@@ -864,6 +885,7 @@ class MainWindow(QMainWindow):
         # ── Progress dialog ───────────────────────────────────────────────────
         dlg = _Dialog(self, title, f"Steam account {steam_id}", min_width=460,
                       icon="cloud-upload" if mode == "backup" else "cloud-download")
+        dlg.grow_with_content()
         row = hbox(spacing=SP["sm"])
         result_ic = QLabel()
         result_ic.setFixedSize(16, 16)
@@ -889,6 +911,7 @@ class MainWindow(QMainWindow):
 
         def _on_finished(ok, msg):
             status_lbl.setText(msg)
+            _fit_wrapped(status_lbl)
             result_ic.setPixmap(icons.pixmap("circle-check" if ok else "circle-x",
                                              C["green"] if ok else C["red"], 16))
             bar.setRange(0, 1)
@@ -950,12 +973,13 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_run, daemon=True).start()
 
     def _open_drive_status(self):
-        """Cloud Sync → Backup Status — lists the backup ZIPs on Drive."""
+        """Backup → Drive Backup Status — lists the backup ZIPs on Drive."""
         import threading
-        from app.services.drive_sync import is_configured, is_authenticated, list_backups
+        from app.services.drive_sync import is_configured, drive_status, list_backups
 
         dlg = _Dialog(self, "Backup status", "Backups of your Steam grid folder stored on Google Drive "
                       "through PimpMySteam.", min_width=500, icon="cloud")
+        dlg.grow_with_content()
         head = hbox(spacing=SP["sm"])
         state_ic = QLabel()
         state_ic.setFixedSize(16, 16)
@@ -977,6 +1001,7 @@ class MainWindow(QMainWindow):
 
         def _show(ok: bool, text: str, backups: list):
             state_lbl.setText(text)
+            _fit_wrapped(state_lbl)
             state_ic.setPixmap(icons.pixmap("circle-check" if ok else "circle-x",
                                             C["green"] if ok else C["red"], 16))
             if backups:
@@ -994,11 +1019,11 @@ class MainWindow(QMainWindow):
         def _run():
             try:
                 if not is_configured():
-                    sig.done.emit(False, "No token found.\nCloud Sync → Connect via PimpMySteam…", [])
+                    sig.done.emit(False, "No token found.\nBackup → Connect via PimpMySteam…", [])
                     return
-                if not is_authenticated():
-                    sig.done.emit(False, "Token saved, but Google Drive is not linked.\n"
-                                         "Link it at pimpmysteam.com → Settings.", [])
+                st = drive_status()
+                if not st["authenticated"]:
+                    sig.done.emit(False, st["reason"] or "Token saved, but Google Drive is not linked.", [])
                     return
                 backups = list_backups()
                 if not backups:
@@ -1010,6 +1035,209 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=_run, daemon=True).start()
         dlg.exec()
+
+    # ── Backup handlers (file / USB) ──────────────────────────────────────────
+
+    def _export_artwork_pack(self):
+        """Backup → Export Artwork to File: grid (+ librarycache) → one zip."""
+        import threading
+        from app.services import artwork_pack as ap
+
+        steam_id = self._pick_steam_id("Export Artwork to File")
+        if not steam_id:
+            return
+        try:
+            grid, cache = ap.steam_folders(steam_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Export Artwork to File", str(e))
+            return
+
+        dlg = _Dialog(self, "Export artwork to a file",
+                      "One zip you can keep on a USB stick and import on any PC "
+                      "(Backup → Import Artwork from File…). Drive backups are the same format.",
+                      min_width=520, icon="hard-drive-download")
+        grid_cb  = QCheckBox("Custom artwork  —  userdata/<id>/config/grid  (counting…)")
+        cache_cb = QCheckBox("Steam library cache  —  appcache/librarycache  (counting…)")
+        grid_cb.setChecked(True)
+        cache_cb.setChecked(True)
+        dlg.body.addWidget(grid_cb)
+        dlg.body.addWidget(cache_cb)
+        dlg.body.addWidget(label("The cache is Steam's own copy of every cover it has shown you; Steam "
+                                 "regenerates it, but importing it means the art is there before Steam "
+                                 "re-downloads anything. The grid folder is what Steam treats as your choice.",
+                                 "dim", wrap=True))
+        dlg.add_button("Cancel", on_click=dlg.reject)
+        dlg.add_button("Choose file…", "primary", on_click=dlg.accept, icon="download")
+
+        class _Sig(QObject):
+            sizes = Signal(int, int, int, int)
+        sig = _Sig()
+
+        def _show_sizes(gn, gb, cn, cb):
+            grid_cb.setText(f"Custom artwork  —  userdata/<id>/config/grid  ({gn} files, {gb / 1024 / 1024:.1f} MB)")
+            cache_cb.setText(f"Steam library cache  —  appcache/librarycache  ({cn} files, {cb / 1024 / 1024:.0f} MB)")
+        sig.sizes.connect(_show_sizes)
+        threading.Thread(target=lambda: sig.sizes.emit(*ap.folder_stats(grid), *ap.folder_stats(cache)),
+                         daemon=True).start()
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not grid_cb.isChecked() and not cache_cb.isChecked():
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export artwork to a file", str(Path.home() / ap.default_pack_name(steam_id)),
+            "Zip archive (*.zip)")
+        if not path:
+            return
+        if not path.lower().endswith(".zip"):
+            path += ".zip"
+
+        def _work(progress):
+            return ap.export_pack(steam_id, Path(path), include_grid=grid_cb.isChecked(),
+                                  include_cache=cache_cb.isChecked(), on_progress=progress)
+
+        def _done(r):
+            if not r["ok"]:
+                return False, r["error"]
+            return True, f"Exported {r['files']} file(s) ({r['bytes'] / 1024 / 1024:.1f} MB) to\n{path}"
+
+        self._run_with_progress("Export artwork to a file", f"Steam account {steam_id}",
+                                "hard-drive-download", _work, _done)
+
+    def _import_artwork_pack(self, kind: str):
+        """Backup → Import Artwork from File / Folder → into Steam's grid + librarycache."""
+        from app.services import artwork_pack as ap
+
+        title = "Import artwork"
+        if kind == "file":
+            src, _ = QFileDialog.getOpenFileName(self, title, str(Path.home()), "Zip archive (*.zip)")
+        else:
+            src = QFileDialog.getExistingDirectory(self, title, str(Path.home()))
+        if not src:
+            return
+        src = Path(src)
+        if kind != "file":
+            found = ap.classify_folder(src)
+            if not found:
+                QMessageBox.warning(self, title,
+                    "Could not tell what this folder holds.\n\nPick Steam's grid folder "
+                    "(files like 12345p.png), its librarycache folder (one numbered folder per "
+                    "game), or a folder that contains grid/ and librarycache/ side by side.")
+                return
+            what = " and ".join(found)
+        else:
+            what = "the zip"
+
+        steam_id = self._pick_steam_id(title)
+        if not steam_id:
+            return
+        ans = QMessageBox.question(
+            self, title,
+            f"Copy {what} into Steam for account {steam_id}?\n\n"
+            "Files with the same name are overwritten (custom artwork in "
+            "userdata/<id>/config/grid, cache in appcache/librarycache).\n"
+            "Close Steam first if it is running — it locks its cache files on Windows.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans != QMessageBox.Yes:
+            return
+
+        def _work(progress):
+            return ap.import_pack(src, steam_id, on_progress=progress)
+
+        def _done(r):
+            if not r["ok"]:
+                return False, r["error"]
+            parts = []
+            if r["grid"]:
+                parts.append(f"{r['grid']} custom artwork file(s)")
+            if r["librarycache"]:
+                parts.append(f"{r['librarycache']} cache file(s)")
+            msg = "Imported " + " and ".join(parts) + "."
+            if r["skipped"]:
+                msg += f" Skipped {r['skipped']} entries outside the Steam folders."
+            return True, msg + "\nRestart Steam to see the artwork."
+
+        self._run_with_progress(title, f"{src.name} → Steam account {steam_id}", "hard-drive-upload",
+                                _work, _done, offer_restart=True)
+
+    def _run_with_progress(self, title: str, subtitle: str, icon: str, work, done, offer_restart: bool = False):
+        """
+        A small progress dialog around a blocking job: `work(progress_cb)` runs on a
+        thread and returns a result; `done(result) -> (ok, message)` formats it.
+        With offer_restart, a successful job adds a "Restart Steam" button.
+        """
+        import threading
+        dlg = _Dialog(self, title, subtitle, min_width=480, icon=icon)
+        dlg.grow_with_content()
+        row = hbox(spacing=SP["sm"])
+        result_ic = QLabel()
+        result_ic.setFixedSize(16, 16)
+        result_ic.setPixmap(icons.pixmap("loader-circle", C["accent"], 16))
+        row.addWidget(result_ic, 0, Qt.AlignmentFlag.AlignTop)
+        status_lbl = label("Starting…", "body", wrap=True)
+        row.addWidget(status_lbl, 1)
+        dlg.body.addLayout(row)
+        bar = QProgressBar()
+        bar.setRange(0, 0)
+        bar.setFixedHeight(6)
+        bar.setTextVisible(False)
+        dlg.body.addWidget(bar)
+        restart_btn = None
+        if offer_restart:
+            restart_btn = dlg.add_button("Restart Steam", on_click=lambda: self._restart_steam_now(dlg), icon="refresh-cw")
+            restart_btn.setEnabled(False)
+        close_btn = dlg.add_button("Close", "primary", on_click=dlg.accept)
+        close_btn.setEnabled(False)
+
+        class _Sig(QObject):
+            progress = Signal(str)
+            finished = Signal(bool, str)
+        sig = _Sig()
+        sig.progress.connect(status_lbl.setText)
+
+        def _on_finished(ok, msg):
+            status_lbl.setText(msg)
+            _fit_wrapped(status_lbl)
+            result_ic.setPixmap(icons.pixmap("circle-check" if ok else "circle-x",
+                                             C["green"] if ok else C["red"], 16))
+            bar.setRange(0, 1)
+            bar.setValue(1)
+            close_btn.setEnabled(True)
+            if restart_btn is not None and ok:
+                restart_btn.setEnabled(True)
+            self._notify(f"[{title}] {msg.splitlines()[0]}", "success" if ok else "error")
+        sig.finished.connect(_on_finished)
+
+        def _thread():
+            try:
+                ok, msg = done(work(sig.progress.emit))
+                sig.finished.emit(bool(ok), str(msg))
+            except Exception as e:
+                sig.finished.emit(False, f"{e}")
+
+        threading.Thread(target=_thread, daemon=True).start()
+        dlg.exec()
+
+    def _restart_steam_now(self, dlg=None):
+        """Restart Steam so it re-reads grid + librarycache (refuses while a game runs)."""
+        import threading
+        from app.services.steamSync import restart_steam
+        self._notify("[Steam] Restarting Steam…", "info")
+
+        class _Sig(QObject):
+            done = Signal(bool)
+        sig = _Sig(self)                 # parented: must outlive this method until the thread reports
+
+        def _done(ok: bool):
+            self._notify(
+                "[Steam] Restart requested — Steam shows the new artwork when it is back." if ok
+                else "[Steam] Not restarted (a game is running, or Steam was not found). Restart it yourself.",
+                "success" if ok else "error")
+            sig.deleteLater()
+        sig.done.connect(_done)
+        threading.Thread(target=lambda: sig.done.emit(bool(restart_steam(silent=True))), daemon=True).start()
+        if dlg is not None:
+            dlg.accept()
 
     # ── File handlers ─────────────────────────────────────────────────────────
 
@@ -1678,37 +1906,44 @@ class MainWindow(QMainWindow):
 
     # ── Update checker ────────────────────────────────────────────────────────
 
-    def _check_for_updates(self):
-        """Check GitHub releases/latest in a background daemon thread."""
+    def _check_for_updates(self, manual: bool = True):
+        """
+        Help → Check for Updates (manual=True: always answers) and the quiet
+        check 3 s after start (manual=False: only speaks when something is new).
+        """
         import threading
+        from app.services.updates import check_latest
 
-        def _worker():
-            try:
-                import urllib.request, json as _json
-                url = f"https://api.github.com/repos/Huzzama/Steam-Grunge/releases/latest"
-                req = urllib.request.Request(
-                    url,
-                    headers={"User-Agent": f"SteamGrungeEditor/{APP_VERSION}"},
-                )
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    data = _json.loads(resp.read())
-                tag = data.get("tag_name", "").lstrip("v")
-                if tag and tag != APP_VERSION:
-                    QTimer.singleShot(0, lambda t=tag: self._show_update_banner(t))
-            except Exception:
-                pass
+        class _Sig(QObject):
+            done = Signal(object)
+        sig = _Sig()
+        sig.done.connect(lambda r: self._on_update_check(r, manual))
+        threading.Thread(target=lambda: sig.done.emit(check_latest(APP_VERSION)), daemon=True).start()
 
-        threading.Thread(target=_worker, daemon=True).start()
+    def _on_update_check(self, r: dict, manual: bool):
+        if r.get("error"):
+            if manual:
+                self._notify(f"Could not check for updates: {r['error']}", "error")
+            return
+        if r["available"]:
+            self._release_url = r["url"]
+            self._show_update_banner(r["latest"])
+        elif manual:
+            self._notify(f"You're up to date — {APP_VERSION} is the newest release.", "success")
 
     def _show_update_banner(self, latest_version: str):
+        if getattr(self, "_update_banner", None) is not None:
+            self._notify(f"Update available: v{latest_version} — see the status bar", "info")
+            return
         btn = Button(f"Update available: v{latest_version}", "success", icon="download",
                      on_click=self._open_release_page, tooltip="Click to open the download page")
+        self._update_banner = btn
         self.status_bar.insertPermanentWidget(0, btn)
         self._notify(f"Update available: v{latest_version} — see the status bar", "info")
 
     def _open_release_page(self):
         import webbrowser
-        webbrowser.open(f"https://github.com/Huzzama/Steam-Grunge/releases/latest")
+        webbrowser.open(getattr(self, "_release_url", None) or "https://github.com/Huzzama/Steam-Grunge/releases/latest")
 
     def _report_issue(self):
         """Help → Report Issue — opens GitHub issues page."""
@@ -1729,4 +1964,4 @@ class MainWindow(QMainWindow):
         dlg.add_button("GitHub", icon="external-link",
                        on_click=lambda: webbrowser.open("https://github.com/Huzzama/Steam-Grunge"))
         dlg.add_button("Close", "primary", on_click=dlg.accept)
-        dlg.exec()
+        dlg.exec()

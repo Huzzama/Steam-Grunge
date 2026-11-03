@@ -4,6 +4,28 @@ All notable changes to Steam Grunge Editor are documented here.
 
 ---
 
+## [4.1.0] — 2026-11-03
+
+### Backup
+- **Artwork on a USB stick**: Backup → *Export Artwork to File (USB)…* writes one
+  ZIP (`grid/` = your custom artwork, optionally `librarycache/` = Steam's own
+  cache) and *Import Artwork from File / Folder…* puts it back on any PC —
+  it also accepts Drive backup ZIPs, a copied `grid` folder, a `librarycache`
+  folder or a folder holding both. Offers to restart Steam afterwards.
+- Drive: when the backup cannot run, the app now says why — no Drive
+  permission on the PimpMySteam account (Google sign-in alone does not grant
+  it; use Connect Google Drive on pimpmysteam.com → Settings → Connections), a
+  Drive link Google no longer accepts (reconnect it), a revoked app token, or
+  no network — instead of a generic "not connected". *Drive Backup Status…*
+  shows the same diagnosis. (Backend: a dead Drive link is forgotten
+  server-side so the website offers Connect again.)
+- The menu is called **Backup** (was Cloud Sync).
+
+### Help
+- *Check for Updates* now answers in every case ("You're up to date",
+  "Update available: vX" with the download page, or the error) and only
+  announces versions newer than the one running.
+
 ## [4.0.0] — 2026-09-29
 
 First release of the rebuilt editor (3.1 and 3.2 were never published on their own).
@@ -403,4 +425,4 @@ Changes made:
 - Multi-tab workflow
 - Export single asset or all assets at once
 - Sync to Steam dialog with automatic AppID lookup via Steam Store API
-- Packages: AppImage, .deb, Windows installer (.exe), macOS .dmg
+- Packages: AppImage, .deb, Windows installer (.exe), macOS .dmg

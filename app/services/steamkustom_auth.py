@@ -90,11 +90,21 @@ def get_user() -> Optional[dict]:
 
 
 def get_drive_token() -> Optional[str]:
+    return get_drive_token_result()[0]
+
+
+def get_drive_token_result() -> tuple[Optional[str], Optional[str]]:
+    """
+    (access token, None) when the backend hands us a Drive token, else
+    (None, reason) — a sentence that says what to do about it. The backend
+    answers 404 when the account has no Drive link and 502 when Google
+    rejected the stored one; both used to collapse into "not connected".
+    """
     token = get_token()
     if not token:
-        return None
+        return None, "No PimpMySteam token saved. Backup → Connect via PimpMySteam…"
     try:
-        import urllib.request, ssl
+        import urllib.request, urllib.error, ssl, json as _j
         req = urllib.request.Request(
             f"{API_URL}/google/drive-token",
             headers={
@@ -108,12 +118,40 @@ def get_drive_token() -> Optional[str]:
         except ImportError:
             ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            if resp.status == 200:
-                import json as _j
-                return _j.loads(resp.read().decode()).get("access_token")
+            data = _j.loads(resp.read().decode())
+            access = data.get("access_token")
+            if access:
+                return access, None
+            return None, "PimpMySteam answered without a Drive token. Try again in a minute."
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            body = e.read().decode(errors="replace")
+            detail = _j.loads(body).get("detail", "") if body.strip().startswith("{") else body
+        except Exception:
+            pass
+        detail = str(detail or "").strip()
+        print(f"[PimpMySteam] drive-token HTTP {e.code}: {detail}")
+        if e.code == 401:
+            return None, ("PimpMySteam rejected the app token (revoked or expired). "
+                          "Make a new one at pimpmysteam.com → Settings → Apps and paste it in "
+                          "Backup → Connect via PimpMySteam…")
+        if e.code == 404:
+            return None, ("Google Drive is not connected to your PimpMySteam account. Signing in "
+                          "with Google is not enough — open pimpmysteam.com → Settings → "
+                          "Connections and press Connect Google Drive, then try again."
+                          + (f"\n({detail})" if detail else ""))
+        if e.code == 502:
+            return None, ("Google rejected the Drive link stored for your account (it expired or "
+                          "was revoked). On pimpmysteam.com → Settings → Connections disconnect "
+                          "Google Drive and connect it again, then try again.")
+        return None, f"PimpMySteam answered HTTP {e.code}{': ' + detail if detail else ''}."
+    except urllib.error.URLError as e:
+        print(f"[PimpMySteam] drive-token URL error: {e.reason}")
+        return None, f"Could not reach api.pimpmysteam.com ({e.reason}). Check your connection."
     except Exception as e:
         print(f"[PimpMySteam] get_drive_token error: {e}")
-    return None
+        return None, f"Drive token error: {e}"
 
 
 def get_steam_id() -> Optional[str]:

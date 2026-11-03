@@ -43,23 +43,29 @@ def is_configured() -> bool:
 def is_authenticated() -> bool:
     return bool(_fetch_drive_token())
 
-def get_status() -> dict:
+def drive_status() -> dict:
+    """{"configured", "authenticated", "reason"} — reason says what to fix when not authenticated."""
+    from app.services.steamkustom_auth import get_drive_token_result
     token = _get_pimpmysteam_token()
-    return {
-        "configured":    bool(token),
-        "authenticated": bool(_fetch_drive_token()) if token else False,
-    }
+    if not token:
+        return {"configured": False, "authenticated": False,
+                "reason": "No token found.\nBackup → Connect via PimpMySteam…"}
+    access, reason = get_drive_token_result()
+    return {"configured": True, "authenticated": bool(access), "reason": reason}
+
+def get_status() -> dict:
+    st = drive_status()
+    return {"configured": st["configured"], "authenticated": st["authenticated"]}
 
 
 # ── Drive helpers ──────────────────────────────────────────────────────────────
 
 def _service():
-    access_token = _fetch_drive_token()
+    from app.services.steamkustom_auth import get_drive_token_result
+    access_token, reason = get_drive_token_result()
     if not access_token:
-        raise RuntimeError(
-            "Not connected to Google Drive. "
-            "Use Cloud Sync → Connect via PimpMySteam… first."
-        )
+        raise RuntimeError(reason or "Not connected to Google Drive. "
+                           "Use Backup → Connect via PimpMySteam… first.")
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     creds = Credentials(token=access_token)
